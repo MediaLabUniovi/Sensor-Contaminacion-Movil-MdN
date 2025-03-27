@@ -191,7 +191,7 @@ void loop(){
         float pm2_5 = NAN;  //?  Cambiar al tipo de dato de la librería usada para el SPS30
             //...           //TODO implementar escritura del sensor
         //Escritura de datos en la SD
-        data.concat((String(pm2_5)+"\n").c_str()); //TODO escribir dato del sensor (Descomentar esta línea)
+        data.concat((String(pm2_5)+"\n").c_str()); 
         Serial.println("[SD] Escribiendo datos en \"" + String(DATA_FILENAME) + "\"");
         appendFile(SD, DATA_FILENAME, data.c_str());  // Escribimos los datos en el fichero de la SD
         Serial.println("[SD] Datos escritos: " + data); 
