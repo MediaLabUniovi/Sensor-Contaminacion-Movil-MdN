@@ -1,8 +1,8 @@
 // Fichero con funciones de gestión de archivos 
 #ifndef SD_INCLUDES
 #define SD_INCLUDES
-#include "FS.h"     // ESP32 FileSystem (https://github.com/espressif/arduino-esp32/tree/master/libraries/FS)
 #include "SD.h"     // ESP32 SD (https://github.com/espressif/arduino-esp32/tree/master/libraries/SD)
+#include "FS.h"     // ESP32 FileSystem (https://github.com/espressif/arduino-esp32/tree/master/libraries/FS)
 #include "SPI.h"    // ESP32 SPI (https://github.com/espressif/arduino-esp32/tree/master/libraries/SPI)
 #endif  // SD_INCLUDES
 /*

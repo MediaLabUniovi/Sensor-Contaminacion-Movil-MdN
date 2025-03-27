@@ -1,4 +1,4 @@
-Latitud;Longitud;Año;Mes;Día;hh:mm:ss;PM2.5 
+Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5
 --------------------------------------------
-25.0;15.0;2025;03;24;10:44:55;4.1	(Ejemplo)
+25.0;15.0;2025;03;24;10:44:55;21.2;1023.1;65.6;4.1	(Ejemplo)
 		
