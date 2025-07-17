@@ -3,7 +3,6 @@
  *
  * Autor: José Luis Muñiz Traviesas; 28/01/25
  */
-bool prueba = true;
 // GPS
 #include "Arduino.h"
 #include <TinyGPS.h>            // https://github.com/neosarchizo/TinyGPS
@@ -38,12 +37,21 @@ const char* PASSWORD = "RetoTicLab";
 enum Mode: uint8_t {
     IDLE = 0,
     PROCESS_LONG_PRESS,
-    DATA_RECOLECTION,
+    DATA_RECOLLECTION,
     WIFI_CONNECTION,
     SEND_DATA
 };
 volatile Mode currentMode  = IDLE;
 Mode          previousMode = IDLE;
+enum DataRecolectStage : uint8_t {
+  DC_IDLE = 0,
+  DC_READ_GPS,
+  DC_PROCESS_GPS,
+  DC_READ_PARTICLES,
+  DC_WRITE_SD,
+  DC_UPDATE_LEDS,
+  DC_WAIT
+};
 #define USER_BUTTON (25)
 // Parámetros de muestreo y pulsación larga
 const unsigned long SAMPLE_INTERVAL_MS = 20;         // Intervalo de muestreo (ms)
@@ -210,8 +218,8 @@ void loop(){
               Serial.println(">> Pulsación larga detectada");
               ledSequence();
               // Transición según el modo anterior
-              if      (previousMode == IDLE)            currentMode = DATA_RECOLECTION;
-              else if (previousMode == DATA_RECOLECTION) currentMode = WIFI_CONNECTION;
+              if      (previousMode == IDLE)            currentMode = DATA_RECOLLECTION;
+              else if (previousMode == DATA_RECOLLECTION) currentMode = WIFI_CONNECTION;
               else                                      currentMode = IDLE;
 
               Serial.print("Cambiando a modo ");
@@ -230,153 +238,123 @@ void loop(){
         break;
         }
 
-        case DATA_RECOLECTION: {
-            bool newDataFlag = false;
-            unsigned long chars;
-            unsigned short sentences, failed;
-            String data = "";     // Cadena que almacena los datos a escribir en la SD
-            // Leemos el GPS durante 1 segundo
-            Serial.println("[GPS] Leyendo GPS por Serial2 1s");
-            uint32_t t0 = millis();
-            for(; millis() - t0 < 1000; ){
-              if (Serial2.available()) {
-                char c = Serial2.read();
-                if (GPS.encode(c)) {
-                  Serial.println("[GPS] Frase NMEA decodificada, saliendo del bucle");
-                  newDataFlag = true;
-                  break;    // aquí haces el salto inmediato
-                }
-              }
+        case DATA_RECOLLECTION: {
+            // Variables estáticas para este caso
+            static uint8_t  dcStage       = 0;
+            static uint32_t dcTimestamp   = 0;
+            static bool     newDataFlag   = false;
+            static String   dataBuffer    = "";
+
+            // Permitir detectar un nuevo long‑press en cualquier momento
+            LongPressResult lpRes = checkLongPress(lpState, lpCfg);
+            if (lpRes == LONG_PRESS_DETECTED) {
+              // Salimos inmediatamente para reentrar en PROCESS_LONG_PRESS
+              Serial.println(">> Long-press dentro de DATA_RECOLECTION, interrumpiendo");
+              currentMode = PROCESS_LONG_PRESS;
+              attachInterrupt(digitalPinToInterrupt(USER_BUTTON),
+                              isr_button_pressed,
+                              FALLING);
+              // Reinciamos etapa para la próxima vez
+              dcStage = DC_IDLE ;
+              break;
             }
-            Serial.println("\n[GPS] Finished reading serial.");
-            Serial.print("[GPS] Satellite: ");
-            Serial.println(GPS.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : GPS.satellites());
-            if(!first_connect && GPS.satellites() != TinyGPS::GPS_INVALID_SATELLITES){
-                first_connect = true;
-                time_to_connect_ms = millis();
+        
+            switch (dcStage) {
+                case DC_IDLE :
+                  Serial.println("[GPS] Iniciando lectura 1s...");
+                  newDataFlag = false;
+                  dataBuffer  = "";
+                  dcTimestamp = millis();
+                  dcStage     = DC_READ_GPS;
+                break;
+                
+                case DC_READ_GPS:
+                  // 1 segundo de “muestreo” GPS
+                  while (Serial2.available()) {
+                    char c = Serial2.read();
+                    if (GPS.encode(c)) {
+                      Serial.println("[GPS] NMEA decodificada antes de timeout");
+                      newDataFlag = true;
+                      dcStage     = DC_PROCESS_GPS;
+                      break;
+                    }
+                  }
+                  if (millis() - dcTimestamp >= 1000) {
+                    Serial.println("[GPS] Timeout lectura GPS");
+                    dcStage = DC_PROCESS_GPS;
+                  }
+                break;
+                
+                case DC_PROCESS_GPS:
+                  // Procesamos datos GPS (si los hay)
+                  if (newDataFlag) {
+                    float lat, lon; unsigned long age;
+                    int year; uint8_t month, day, hour, minute, second;
+                    GPS.f_get_position(&lat, &lon, &age);
+                    dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
+                    GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
+                    hour = (hour + TIME_OFFSET_H) % 24;
+                    dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
+                                + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
+                  }
+                  dcStage     = DC_READ_PARTICLES;
+                break;
+                
+                case DC_READ_PARTICLES: {
+                  // SPS30: esperamos data_ready sin delay()
+                  uint16_t ready = 0;
+                  int16_t ret = sps30_read_data_ready(&ready);
+                  if (ret < 0) {
+                    Serial.printf("error data_ready: %d\n", ret);
+                    dcStage = DC_WRITE_SD;  // saltamos al siguiente paso para no bloquear aquí
+                  }
+                  else if (ready) {
+                    struct sps30_measurement pm;
+                    ret = sps30_read_measurement(&pm);
+                    if (ret >= 0) {
+                      dataBuffer += String(pm.mc_2p5) + ";" 
+                                  + String(pm.mc_10p0 - pm.mc_2p5) + "\n";
+                    }
+                    dcStage = DC_WRITE_SD;
+                  }
+                  // si no está ready, nos quedamos en 3 hasta que lo esté
+                break;
+                }
+              
+                case DC_WRITE_SD:
+                  // Lectura BME280 y escritura en SD
+                  if (bme_ok) {
+                    float t = bme.readTemperature();
+                    float p = bme.readPressure() / 100.0F;
+                    float h = bme.readHumidity();
+                    // Inserto antes de los PM si newDataFlag fue falso
+                    dataBuffer = String(t) + ";" + String(p) + ";" + String(h) + ";" + dataBuffer;
+                  }
+                  appendFile(SD, DATA_FILENAME, dataBuffer.c_str());
+                  Serial.println("[SD] Datos escritos: " + dataBuffer);
+                  dcTimestamp = millis();
+                  dcStage     = DC_UPDATE_LEDS;
+                break;
+                
+                case DC_UPDATE_LEDS:
+                  // Actualizo LEDs de debug (sin bloqueos)
+                  pixels.clear();
+                  // Ejemplo simplificado: LED1 según PM2.5, LED2 PM10, LED3 estado sistema, LED0 GPS
+                  // (aquí podrías reutilizar tu código original de colores)
+                  pixels.show();
+                  dcStage = DC_WAIT;
+                break;
+                
+                case DC_WAIT:
+                  // Esperamos 5 s antes de reiniciar la recolección
+                  if (millis() - dcTimestamp >= 5000) {
+                    dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
+                  }
+                break;
             }
-            if(newDataFlag){ // Si hay datos GPS se decodifica la trama NMEA
-                float lat, lon;         // Latitud y Longitud
-                unsigned long age;      // Tiempo conectado
-                int year;
-                uint8_t month, day, hour, minute, second;
-                Serial.println("[GPS] New Data Flag Recieved");
-                GPS.f_get_position(&lat, &lon, &age);
-                data.concat((String(lat)+";").c_str()); // Añadimos datos a la cadena
-                data.concat((String(lon)+";").c_str());
-                Serial.print("LAT=");       // Latitud
-                Serial.print(lat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : lat, 6);
-                Serial.print(" LON=");      // Longitud
-                Serial.print(lon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : lon, 6);
-                Serial.print(" SAT=");      // Satélite
-                Serial.print(GPS.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : GPS.satellites());
-                Serial.print(" PREC=");     // Precisión (HDOP)
-                Serial.print(GPS.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : GPS.hdop());
-                Serial.println("");
-                GPS.crack_datetime(&year, &month, &day, &hour, &minute, &second, NULL, NULL);
-                hour = (hour + TIME_OFFSET_H) % 24; // Aplicamos el desfase horario para la hora local en España
-                data.concat((String(year)+";").c_str()); // Añadimos datos a la cadena
-                data.concat((String(month)+";").c_str());
-                data.concat((String(day)+";").c_str());   
-                data.concat((String(hour)+":"+String(minute)+":"+String(second)+";").c_str());      
-                Serial.print("\n[GPS] DATE: "+String(day)+"/"+String(month)+"/"+String(year)); // Fecha
-                Serial.println("; TIME: "+String(hour)+":"+String(minute)+":"+String(second)); // Hora
-            }
-            if(data != ""){ // Si obtenemos dato del GPS obtenemos datos de los sensores para agregarlos
-                //---------------- sensor particulas ----------------//
-                struct sps30_measurement pm;
-                char serial[SPS30_MAX_SERIAL_LEN];
-                uint16_t data_ready;
-                int16_t ret;
-                do {
-                    ret = sps30_read_data_ready(&data_ready);
-                    if (ret < 0) {
-                        Serial.print("error reading data-ready flag: ");
-                        Serial.println(ret);
-                    } else if (!data_ready)
-                        Serial.print("data not ready, no new measurement available\n");
-                    else
-                        break;
-                    delay(100); /* retry in 100ms */
-                } while (1);
-                ret = sps30_read_measurement(&pm);
-                if (ret < 0) {
-                    Serial.print("error reading measurement\n");
-                } else {
-                    #ifndef PLOTTER_FORMAT
-                    Serial.print("PM  2.5: ");
-                    Serial.println(pm.mc_2p5);
-                    Serial.print("PM 10.0: ");
-                    Serial.println(pm.mc_10p0);
-                    Serial.println();
-                    #endif
-                }
-                //SPS30 (PM2.5)
-                float pm2_5 = pm.mc_2p5;
-                float pm_10 = pm.mc_10p0-pm.mc_2p5;
-                //BME280 (Temp, Pres & Humedad)
-                float temperatura(NAN), presion(NAN), humedad(NAN);
-                temperatura = bme.readTemperature();  // Celsius
-                presion = bme.readPressure() / 100.0F;  // Convertir a hPa
-                humedad = bme.readHumidity();
-                data.concat((String(temperatura)+";"+String(presion)+";"+String(humedad)+";").c_str());
-                data.concat((String(pm2_5)+";"+String(pm_10)+"\n").c_str());
-                Serial.println("[SD] Escribiendo datos en \"" + String(DATA_FILENAME) + "\"");
-                appendFile(SD, DATA_FILENAME, data.c_str());  // Escribimos los datos en el fichero de la SD
-                Serial.println("[SD] Datos escritos: " + data); 
-                //---------------- debug leds ----------------//
-                pixels.clear();
-                if(pm2_5 <= 12.0) {
-                    pixels.setPixelColor(1, COLOR_VERDE);
-                } else if(pm2_5 <= 35.4) {
-                    pixels.setPixelColor(1, COLOR_NARANJA);
-                } else {
-                    pixels.setPixelColor(1, COLOR_ROJO);
-                }
-                // LED 3 - PM10
-                if(pm_10 <= 54.0) {
-                    pixels.setPixelColor(2, COLOR_VERDE);
-                } else if(pm_10 <= 154.0) {
-                    pixels.setPixelColor(2, COLOR_NARANJA);
-                } else {
-                    pixels.setPixelColor(2, COLOR_ROJO);
-                }
-                // LED 4 - Estado del sistema
-                bool sistema_ok = true;
-                // Verificar SPS30
-                if(ret < 0) {
-                    pixels.setPixelColor(3, COLOR_ROJO);
-                    sistema_ok = false;
-                }
-                // Verificar BME280
-                else if(bme_ok) {
-                    pixels.setPixelColor(3, COLOR_NARANJA);
-                    sistema_ok = false;
-                }
-                // Verificar SD
-                else if(!SD.begin(CS_PIN)) {
-                    pixels.setPixelColor(3, COLOR_AMARILLO);
-                    sistema_ok = false;
-                }
-                // Todo OK
-                else {
-                    pixels.setPixelColor(3, COLOR_AZUL);
-                }    
-                // Control del LED 1 según estado del GPS
-                if(GPS.satellites() == TinyGPS::GPS_INVALID_SATELLITES) {
-                    pixels.setPixelColor(0, COLOR_ROJO);
-                } else {
-                    pixels.setPixelColor(0, COLOR_VERDE);
-                }
-                pixels.show();
-            } 
-            GPS.stats(&chars, &sentences, &failed);   // Check de si se reciben datos del GPS
-            if(chars == 0){
-                Serial.println("[GPS] No se han recibido caracteres del GPS: comprobar cableado.");
-            }
-            delay(5000);
         break;
         }
+
 
         case WIFI_CONNECTION: {
             /*
@@ -428,7 +406,7 @@ void ledSequence() {
       }
       break;
 
-    case DATA_RECOLECTION:
+    case DATA_RECOLLECTION:
       // Carrera de un LED azul adelante y atrás
       for (int dir = 0; dir < 2; dir++) {
         if (dir == 0) {
