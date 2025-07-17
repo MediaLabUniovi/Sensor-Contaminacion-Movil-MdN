@@ -1,1 +1,0 @@
-Scripts para el testeo del sensor SPS30

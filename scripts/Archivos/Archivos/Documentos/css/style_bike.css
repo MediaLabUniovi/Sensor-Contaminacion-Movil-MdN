@@ -1,0 +1,199 @@
+/* ------------------------------------
+   GENERAL
+------------------------------------- */
+body {
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+  background: #f7f9fa;
+}
+
+/* ------------------------------------
+   PANEL SUPERIOR DE FILTROS
+------------------------------------- */
+.filter-panel {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 2rem;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 1rem 0;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 280px;
+}
+
+.filter-group label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+  text-align: center;
+  width: 100%;
+}
+
+#panel input,
+#panel select {
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid #bbb;
+  padding: 10px 14px;
+  background: #fff;
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  line-height: 1.4;
+}
+
+.filter-group button {
+  padding: 10px 20px;
+  font-weight: 600;
+  font-size: 1rem;
+  border: 2px solid #222;
+  border-radius: 8px;
+  background: #f7fbff;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  width: 100%;
+}
+
+.filter-group button:hover {
+  background: #e2eefc;
+}
+
+/* ------------------------------------
+   PANEL PRINCIPAL (VISOR AZUL)
+------------------------------------- */
+#visor-bici {
+  margin-top: 0px;
+  background: #e9f3fd;
+  padding: 32px 24px 24px 24px;
+  min-height: 200px;
+  box-shadow: 0 2px 16px #0001;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ------------------------------------
+   MAPA Y ELEMENTOS FLOTANTES
+------------------------------------- */
+#map {
+  position: relative;
+  width: 100%;
+  min-height: 540px;
+  height: 480px;
+  border: 1px solid #ccc;
+  border-radius: 12px;
+  background: #e9eaf0;
+  margin-bottom: 22px;
+  box-shadow: 0 0 12px #0001;
+}
+
+#map #stats {
+  position: absolute;
+  top: 32px;
+  right: 24px;
+  z-index: 1001;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px #0001;
+  font-size: 1rem;
+  padding: 13px 18px 10px 18px;
+  min-width: 160px;
+  min-height: 40px;
+  max-width: 230px;
+  display: block;
+}
+
+#stats b {
+  color: #0077cc;
+  font-size: 1.08rem;
+}
+
+#map #legend {
+  position: absolute;
+  left: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  background: #fff;
+  padding: 7px 9px 6px 9px;
+  border-radius: 10px;
+  box-shadow: 0 0 12px #0001;
+  font-size: 0.90rem;
+  min-width: 80px;
+  line-height: 1.35;
+}
+
+#statsContent {
+  display: none !important;
+}
+
+#statsContent:empty {
+  display: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  min-height: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+#stats:empty {
+  display: none !important;
+}
+
+/* ------------------------------------
+   PIE DE PÁGINA
+------------------------------------- */
+footer {
+  max-width: 100vw;
+  overflow-x: auto;
+}
+
+/* ------------------------------------
+   RESPONSIVE (MÓVIL)
+------------------------------------- */
+@media (max-width: 500px) {
+  #visor-bici {
+    padding: 8px;
+    border-radius: 0;
+    background: #f7f9fa;
+  }
+
+  #stats {
+    position: static;
+    width: 98vw;
+    max-width: 99vw;
+    margin: 10px auto 0 auto;
+    left: auto;
+    right: auto;
+    top: auto;
+    box-shadow: 0 2px 8px #0001;
+    z-index: 1;
+    display: block;
+    min-width: unset;
+    min-height: 36px;
+    padding: 10px 4vw 8px 4vw;
+    background: #fff;
+  }
+
+  #statsContent {
+    display: block !important;
+    margin: 14px auto 0 auto;
+    width: 98vw;
+    max-width: 99vw;
+    min-height: 36px;
+    padding: 10px 4vw 8px 4vw;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px #0001;
+    font-size: 1rem;
+  }
+
+  #map #stats {
+    display: none !important;
+  }
+}
