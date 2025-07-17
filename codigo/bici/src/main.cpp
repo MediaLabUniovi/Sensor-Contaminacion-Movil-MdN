@@ -3,7 +3,7 @@
  *
  * Autor: José Luis Muñiz Traviesas; 28/01/25
  */
-
+bool prueba = true;
 // GPS
 #include "Arduino.h"
 #include <TinyGPS.h>            // https://github.com/neosarchizo/TinyGPS
@@ -33,11 +33,14 @@
 #include "mdc_contaminacion.hpp"
 #include "LongPress.h"
 //------------------------- Definición de constantes -----------------------
+const char* AP_NAME = "SensorMovil";
+const char* PASSWORD = "RetoTicLab";
 enum Mode: uint8_t {
     IDLE = 0,
     PROCESS_LONG_PRESS,
     DATA_RECOLECTION,
-    WIFI_CONNECTION
+    WIFI_CONNECTION,
+    SEND_DATA
 };
 volatile Mode currentMode  = IDLE;
 Mode          previousMode = IDLE;
@@ -103,7 +106,7 @@ void ledSequence();
 void IRAM_ATTR isr_button_pressed(){
     detachInterrupt(digitalPinToInterrupt(USER_BUTTON));
     previousMode = currentMode;
-     currentMode  = PROCESS_LONG_PRESS;
+    currentMode  = PROCESS_LONG_PRESS;
 }
 
 void setup(){
@@ -197,33 +200,33 @@ void setup(){
 void loop(){
     switch (currentMode) {
         case IDLE:
-                    
+            
         break;
 
         case PROCESS_LONG_PRESS: {
-          // Cada iteración medimos si hubo long‑press o si canceló (release antes de umbral)
-          LongPressResult res = checkLongPress(lpState, lpCfg);
-          if (res == LONG_PRESS_DETECTED) {
-            Serial.println(">> Pulsación larga detectada");
-            ledSequence();
-            // Transición según el modo anterior
-            if      (previousMode == IDLE)            currentMode = DATA_RECOLECTION;
-            else if (previousMode == DATA_RECOLECTION) currentMode = WIFI_CONNECTION;
-            else                                      currentMode = IDLE;
+            // Cada iteración medimos si hubo long‑press o si canceló (release antes de umbral)
+            LongPressResult res = checkLongPress(lpState, lpCfg);
+            if (res == LONG_PRESS_DETECTED) {
+              Serial.println(">> Pulsación larga detectada");
+              ledSequence();
+              // Transición según el modo anterior
+              if      (previousMode == IDLE)            currentMode = DATA_RECOLECTION;
+              else if (previousMode == DATA_RECOLECTION) currentMode = WIFI_CONNECTION;
+              else                                      currentMode = IDLE;
 
-            Serial.print("Cambiando a modo ");
-            Serial.println(currentMode);
-            // Rehabilita la ISR para la próxima pulsación
-            attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
-          }
-          else if (res == PRESS_CANCELLED) {
-            Serial.println(">> Pulsación cancelada (cortita)");
-            // Vuelves al modo previo
-            currentMode = previousMode;
-            Serial.print("Volviendo a modo ");
-            Serial.println(currentMode);
-            attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
-          }
+              Serial.print("Cambiando a modo ");
+              Serial.println(currentMode);
+              // Rehabilita la ISR para la próxima pulsación
+              attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
+            }
+            else if (res == PRESS_CANCELLED) {
+              Serial.println(">> Pulsación cancelada (cortita)");
+              // Vuelves al modo previo
+              currentMode = previousMode;
+              Serial.print("Volviendo a modo ");
+              Serial.println(currentMode);
+              attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
+            }
         break;
         }
 
@@ -375,12 +378,37 @@ void loop(){
         break;
         }
 
-        case WIFI_CONNECTION:
-            
+        case WIFI_CONNECTION: {
+            /*
+                * WiFiManager con detección de error
+            */
+            WiFi.mode(WIFI_STA);
+            WiFiManager wm;
+            const int MAX_INTENTOS_WIFI = 3;
+            int intentos = 0;
+            // Intenta conectar automáticamente con las redes guardadas
+            bool conectado = wm.autoConnect(AP_NAME, PASSWORD);
+            while (!conectado && intentos < MAX_INTENTOS_WIFI) {
+              Serial.printf("Intento de conexión fallido #%d\n", intentos + 1);
+              delay(100);
+              conectado = (WiFi.status() == WL_CONNECTED);
+              intentos++;
+              Serial.printf("Intentos: %d",intentos);
+            }
+            if (!conectado) {
+              Serial.println("No se pudo conectar tras varios intentos. Borrando configuración WiFi.");
+              wm.resetSettings(); // borra SSID/password de la NVS
+              delay(1000);
+              ESP.restart();  
+            }
+            Serial.println("Conectado correctamente a WiFi");
+            currentMode  = SEND_DATA;
         break;
-
-        default:
-
+        }   
+          
+        case SEND_DATA:
+            Serial.println("Mandando datos");
+            delay(1000);
         break;
     }
 }
