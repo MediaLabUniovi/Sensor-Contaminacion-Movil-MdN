@@ -31,19 +31,15 @@
 // Funciones
 #include "mdc_contaminacion.hpp"
 #include "LongPress.h"
-//------------------------- Definición de constantes -----------------------
-const char* AP_NAME = "SensorMovil";
-const char* PASSWORD = "RetoTicLab";
-enum Mode: uint8_t {
+//-------------------------- Definición de enums --------------------------
+enum Mode: uint8_t { // Enumeración para la máquina de estados general
     IDLE = 0,
     PROCESS_LONG_PRESS,
     DATA_RECOLLECTION,
     WIFI_CONNECTION,
     SEND_DATA
 };
-volatile Mode currentMode  = IDLE;
-Mode          previousMode = IDLE;
-enum DataRecolectStage : uint8_t {
+enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
   DC_IDLE = 0,
   DC_READ_GPS,
   DC_PROCESS_GPS,
@@ -52,6 +48,11 @@ enum DataRecolectStage : uint8_t {
   DC_UPDATE_LEDS,
   DC_WAIT
 };
+//------------------------- Definición de constantes -----------------------
+// WiFi
+const char* AP_NAME = "SensorMovil";
+const char* PASSWORD = "RetoTicLab";
+// Botón
 #define USER_BUTTON (25)
 // Parámetros de muestreo y pulsación larga
 const unsigned long SAMPLE_INTERVAL_MS = 20;         // Intervalo de muestreo (ms)
@@ -71,8 +72,6 @@ LongPressState lpState;
 const uint32_t HARDWARE_BAUDRATE = 115200;      // Baudios Terminal Serie Hardware
 const uint32_t GPS_BAUDRATE = 9600;        // Baudios Terminal Serie Software
 const int8_t TIME_OFFSET_H = 1;  // Desfase de tiempo entre hora local y hora medida (+1 hora)
-//SCL 22
-//SDA 21
 // BME280
 const int BME_SDA = 14; // I2C SDA
 const int BME_SCL = 13; // I2C SCL 
@@ -88,7 +87,6 @@ const int CS_PIN = 5;       // SS
 #define PIN         (27)
 #define NUMPIXELS   (5)    // Cantidad de LEDs
 #define BRIGHTNESS  (50)    // Brillo de los LEDs (0-255)
-
 // Definición de colores
 #define COLOR_ROJO     0xFF0000
 #define COLOR_VERDE    0x00FF00
@@ -98,7 +96,6 @@ const int CS_PIN = 5;       // SS
 Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 // Fichero tarjeta SD
 const char* DATA_FILENAME = "/datos.txt"; // Nombre del fichero donde almacenaremos datos en la SD
-
 //-------------------------- Variables globales ----------------------------
 // BME280
 TwoWire I2CBME(1);  // Usar bus I2C 1
@@ -107,6 +104,9 @@ Adafruit_BME280 bme; // Objeto BME280
 TinyGPS GPS;        // Objeto GPS        
 uint32_t time_to_connect_ms = 0;   // Medida del tiempo de conexión a satélite
 bool first_connect = false;     // Flag para establecer que ya ha habido una conexión
+// Máquina de estados
+volatile Mode currentMode  = IDLE;
+Mode          previousMode = IDLE;
 //--------------------------------------------------------------------------
 
 void ledSequence();
@@ -261,100 +261,114 @@ void loop(){
         
             switch (dcStage) {
                 case DC_IDLE :
-                  Serial.println("[GPS] Iniciando lectura 1s...");
-                  newDataFlag = false;
-                  dataBuffer  = "";
-                  dcTimestamp = millis();
-                  dcStage     = DC_READ_GPS;
+                    Serial.println("[GPS] Iniciando lectura 1s...");
+                    newDataFlag = false;
+                    dataBuffer  = "";
+                    dcTimestamp = millis();
+                    dcStage     = DC_READ_GPS;
                 break;
                 
                 case DC_READ_GPS:
-                  // 1 segundo de “muestreo” GPS
-                  while (Serial2.available()) {
-                    char c = Serial2.read();
-                    if (GPS.encode(c)) {
-                      Serial.println("[GPS] NMEA decodificada antes de timeout");
-                      newDataFlag = true;
-                      dcStage     = DC_PROCESS_GPS;
-                      break;
+                    // 1 segundo de “muestreo” GPS
+                    while (Serial2.available()) {
+                      char c = Serial2.read();
+                      if (GPS.encode(c)) {
+                        Serial.println("[GPS] NMEA decodificada antes de timeout");
+                        newDataFlag = true;
+                        dcStage     = DC_PROCESS_GPS;
+                        break;
+                      }
                     }
-                  }
-                  if (millis() - dcTimestamp >= 1000) {
-                    Serial.println("[GPS] Timeout lectura GPS");
-                    dcStage = DC_PROCESS_GPS;
-                  }
+                    if (millis() - dcTimestamp >= 1000) {
+                      Serial.println("[GPS] Timeout lectura GPS");
+                      dcStage = DC_PROCESS_GPS;
+                    }
                 break;
                 
                 case DC_PROCESS_GPS:
-                  // Procesamos datos GPS (si los hay)
-                  if (newDataFlag) {
-                    float lat, lon; unsigned long age;
-                    int year; uint8_t month, day, hour, minute, second;
-                    GPS.f_get_position(&lat, &lon, &age);
-                    dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
-                    GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
-                    hour = (hour + TIME_OFFSET_H) % 24;
-                    dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
-                                + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
-                  }
-                  dcStage     = DC_READ_PARTICLES;
+                    // Procesamos datos GPS (si los hay)
+                    if (newDataFlag) {
+                      float lat, lon; unsigned long age;
+                      int year; uint8_t month, day, hour, minute, second;
+                      GPS.f_get_position(&lat, &lon, &age);
+                      dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
+                      GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
+                      hour = (hour + TIME_OFFSET_H) % 24;
+                      dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
+                                  + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
+                    }
+                    dcStage     = DC_READ_PARTICLES;
                 break;
                 
                 case DC_READ_PARTICLES: {
-                  // SPS30: esperamos data_ready sin delay()
-                  uint16_t ready = 0;
-                  int16_t ret = sps30_read_data_ready(&ready);
-                  if (ret < 0) {
-                    Serial.printf("error data_ready: %d\n", ret);
-                    dcStage = DC_WRITE_SD;  // saltamos al siguiente paso para no bloquear aquí
-                  }
-                  else if (ready) {
-                    struct sps30_measurement pm;
-                    ret = sps30_read_measurement(&pm);
-                    if (ret >= 0) {
-                      dataBuffer += String(pm.mc_2p5) + ";" 
-                                  + String(pm.mc_10p0 - pm.mc_2p5) + "\n";
+                    // SPS30: esperamos data_ready sin delay()
+                    uint16_t ready = 0;
+                    int16_t ret = sps30_read_data_ready(&ready);
+                    if (ret < 0) {
+                      Serial.printf("error data_ready: %d\n", ret);
+                      dcStage = DC_WRITE_SD;  // saltamos al siguiente paso para no bloquear aquí
                     }
-                    dcStage = DC_WRITE_SD;
-                  }
-                  // si no está ready, nos quedamos en 3 hasta que lo esté
+                    else if (ready) {
+                      struct sps30_measurement pm;
+                      ret = sps30_read_measurement(&pm);
+                      if (ret >= 0) {
+                        dataBuffer += String(pm.mc_2p5) + ";" 
+                                    + String(pm.mc_10p0 - pm.mc_2p5) + "\n";
+                      }
+                      dcStage = DC_WRITE_SD;
+                    }
+                    // si no está ready, nos quedamos en 3 hasta que lo esté
                 break;
                 }
               
                 case DC_WRITE_SD:
-                  // Lectura BME280 y escritura en SD
-                  if (bme_ok) {
-                    float t = bme.readTemperature();
-                    float p = bme.readPressure() / 100.0F;
-                    float h = bme.readHumidity();
-                    // Inserto antes de los PM si newDataFlag fue falso
-                    dataBuffer = String(t) + ";" + String(p) + ";" + String(h) + ";" + dataBuffer;
-                  }
-                  appendFile(SD, DATA_FILENAME, dataBuffer.c_str());
-                  Serial.println("[SD] Datos escritos: " + dataBuffer);
-                  dcTimestamp = millis();
-                  dcStage     = DC_UPDATE_LEDS;
+                    // Lectura BME280 y escritura en SD
+                    // Aquí dataBuffer ya contiene: "lat;lon;yyyy;m;d;hh:mm:ss;" + "pm2.5;pm10\n"
+                    // Solo falta intercalar BME entre GPS y PM:
+                    if (bme_ok) {
+                      float t = bme.readTemperature();
+                      float p = bme.readPressure() / 100.0F;
+                      float h = bme.readHumidity();
+                      // Separamos la parte de PM al final (antes del '\n')
+                      int newlinePos = dataBuffer.lastIndexOf('\n');
+                      String pmPart   = dataBuffer.substring(dataBuffer.lastIndexOf(';') + 1); // e.g. "pm10\n"
+                      String gpsPart  = dataBuffer.substring(0, dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';')+1)+1)+1)+1)+1);
+                      // Pero en realidad es más sencillo: dataBuffer = GPSpart + BMEpart + PMpart
+                      // Dado que dataBuffer = "<GPS>;<PM2.5>;<PM10>\n"
+                      // lo partimos en trozos:
+                      int firstPMsep = dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';')+1)+1)+1); 
+                      String gpsStr  = dataBuffer.substring(0, firstPMsep + 1);            // de inicio hasta el separador antes de PM2.5
+                      String pmStr   = dataBuffer.substring(firstPMsep + 1);               // desde PM2.5 en adelante
+                      // Construimos: GPS + BME + PM
+                      dataBuffer = gpsStr
+                                 + String(t, 2) + ";" + String(p, 2) + ";" + String(h, 2) + ";"
+                                 + pmStr;
+                    }
+                    appendFile(SD, DATA_FILENAME, dataBuffer.c_str());
+                    Serial.println("[SD] Datos escritos: " + dataBuffer);
+                    dcTimestamp = millis();
+                    dcStage     = DC_UPDATE_LEDS;
                 break;
                 
                 case DC_UPDATE_LEDS:
-                  // Actualizo LEDs de debug (sin bloqueos)
-                  pixels.clear();
-                  // Ejemplo simplificado: LED1 según PM2.5, LED2 PM10, LED3 estado sistema, LED0 GPS
-                  // (aquí podrías reutilizar tu código original de colores)
-                  pixels.show();
-                  dcStage = DC_WAIT;
+                    // Actualizo LEDs de debug (sin bloqueos)
+                    pixels.clear();
+                    // TODO: volver a añadir LEDs
+                    // Ejemplo simplificado: LED1 según PM2.5, LED2 PM10, LED3 estado sistema, LED0 GPS
+                    // (aquí podrías reutilizar tu código original de colores)
+                    pixels.show();
+                    dcStage = DC_WAIT;
                 break;
                 
                 case DC_WAIT:
-                  // Esperamos 5 s antes de reiniciar la recolección
-                  if (millis() - dcTimestamp >= 5000) {
-                    dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
-                  }
+                    // Esperamos 5 s antes de reiniciar la recolección
+                    if (millis() - dcTimestamp >= 5000) {
+                      dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
+                    }
                 break;
             }
         break;
         }
-
 
         case WIFI_CONNECTION: {
             /*
@@ -394,19 +408,19 @@ void loop(){
 
 void ledSequence() {
   switch (currentMode) {
-    case IDLE:
+    case IDLE: // Para pasar a DATA_RECOLLECTION
       // Breve parpadeo amarillo en el LED 0
       for (uint8_t i = 0; i < 2; i++) {
         pixels.setPixelColor(0, COLOR_AMARILLO);
         pixels.show();
-        delay(150);
+        delay(500);
         pixels.setPixelColor(0, 0);
         pixels.show();
-        delay(150);
+        delay(500);
       }
       break;
 
-    case DATA_RECOLLECTION:
+    case DATA_RECOLLECTION: // Para pasat a WIFI_CONNECTION
       // Carrera de un LED azul adelante y atrás
       for (int dir = 0; dir < 2; dir++) {
         if (dir == 0) {
@@ -415,7 +429,7 @@ void ledSequence() {
             pixels.clear();
             pixels.setPixelColor(i, COLOR_AZUL);
             pixels.show();
-            delay(80);
+            delay(250);
           }
         } else {
           // atrás
@@ -423,7 +437,7 @@ void ledSequence() {
             pixels.clear();
             pixels.setPixelColor(i, COLOR_AZUL);
             pixels.show();
-            delay(80);
+            delay(250);
           }
         }
       }
