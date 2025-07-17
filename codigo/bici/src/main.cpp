@@ -43,6 +43,7 @@ enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
   DC_IDLE = 0,
   DC_READ_GPS,
   DC_PROCESS_GPS,
+  DC_READ_BME,
   DC_READ_PARTICLES,
   DC_WRITE_SD,
   DC_UPDATE_LEDS,
@@ -288,17 +289,35 @@ void loop(){
                 case DC_PROCESS_GPS:
                     // Procesamos datos GPS (si los hay)
                     if (newDataFlag) {
-                      float lat, lon; unsigned long age;
-                      int year; uint8_t month, day, hour, minute, second;
-                      GPS.f_get_position(&lat, &lon, &age);
-                      dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
-                      GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
-                      hour = (hour + TIME_OFFSET_H) % 24;
-                      dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
-                                  + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
+                        float lat, lon; unsigned long age;
+                        int year; uint8_t month, day, hour, minute, second;
+                        GPS.f_get_position(&lat, &lon, &age);
+                        dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
+                        GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
+                        hour = (hour + TIME_OFFSET_H) % 24;
+                        dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
+                                    + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
+                        dcStage     = DC_READ_BME;
+                    } else {
+                        dcStage     = DC_UPDATE_LEDS;
                     }
-                    dcStage     = DC_READ_PARTICLES;
                 break;
+
+                case DC_READ_BME: {
+                    if (bme_ok) {
+                        float t = bme.readTemperature();
+                        float p = bme.readPressure() / 100.0F;
+                        float h = bme.readHumidity();
+                        dataBuffer  += String(t,2) + ";" 
+                                    + String(p,2) + ";"
+                                    + String(h,2) + ";";
+                    } else {
+                        Serial.println("BME no inicializado, no es posible recoger datos");
+                    }
+                    // Ahora pasamos a leer partículas
+                    dcStage = DC_READ_PARTICLES;
+                break;
+                }
                 
                 case DC_READ_PARTICLES: {
                     // SPS30: esperamos data_ready sin delay()
@@ -323,30 +342,8 @@ void loop(){
               
                 case DC_WRITE_SD:
                     // Lectura BME280 y escritura en SD
-                    // Aquí dataBuffer ya contiene: "lat;lon;yyyy;m;d;hh:mm:ss;" + "pm2.5;pm10\n"
-                    // Solo falta intercalar BME entre GPS y PM:
-                    if (bme_ok) {
-                      float t = bme.readTemperature();
-                      float p = bme.readPressure() / 100.0F;
-                      float h = bme.readHumidity();
-                      // Separamos la parte de PM al final (antes del '\n')
-                      int newlinePos = dataBuffer.lastIndexOf('\n');
-                      String pmPart   = dataBuffer.substring(dataBuffer.lastIndexOf(';') + 1); // e.g. "pm10\n"
-                      String gpsPart  = dataBuffer.substring(0, dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';')+1)+1)+1)+1)+1);
-                      // Pero en realidad es más sencillo: dataBuffer = GPSpart + BMEpart + PMpart
-                      // Dado que dataBuffer = "<GPS>;<PM2.5>;<PM10>\n"
-                      // lo partimos en trozos:
-                      int firstPMsep = dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';', dataBuffer.indexOf(';')+1)+1)+1); 
-                      String gpsStr  = dataBuffer.substring(0, firstPMsep + 1);            // de inicio hasta el separador antes de PM2.5
-                      String pmStr   = dataBuffer.substring(firstPMsep + 1);               // desde PM2.5 en adelante
-                      // Construimos: GPS + BME + PM
-                      dataBuffer = gpsStr
-                                 + String(t, 2) + ";" + String(p, 2) + ";" + String(h, 2) + ";"
-                                 + pmStr;
-                    }
                     appendFile(SD, DATA_FILENAME, dataBuffer.c_str());
                     Serial.println("[SD] Datos escritos: " + dataBuffer);
-                    dcTimestamp = millis();
                     dcStage     = DC_UPDATE_LEDS;
                 break;
                 
@@ -357,13 +354,15 @@ void loop(){
                     // Ejemplo simplificado: LED1 según PM2.5, LED2 PM10, LED3 estado sistema, LED0 GPS
                     // (aquí podrías reutilizar tu código original de colores)
                     pixels.show();
+                    dcTimestamp = millis();
                     dcStage = DC_WAIT;
                 break;
                 
                 case DC_WAIT:
                     // Esperamos 5 s antes de reiniciar la recolección
                     if (millis() - dcTimestamp >= 5000) {
-                      dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
+                        Serial.println("Volvemos a IDLE");
+                        dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
                     }
                 break;
             }
@@ -399,8 +398,9 @@ void loop(){
         }   
           
         case SEND_DATA:
-            Serial.println("Mandando datos");
-            delay(1000);
+            do {
+                Serial.println("Mandando datos");
+            } while (true == false);
         break;
     }
 }
