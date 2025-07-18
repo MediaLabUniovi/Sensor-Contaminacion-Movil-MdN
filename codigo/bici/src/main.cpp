@@ -26,7 +26,9 @@
 #include <Adafruit_NeoPixel.h>
 
 //WiFi
-#include <WiFiManager.h>        //https://github.com/tzapu/WiFiManager
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
 
 // Funciones
 #include "mdc_contaminacion.hpp"
@@ -350,9 +352,41 @@ void loop(){
                 case DC_UPDATE_LEDS:
                     // Actualizo LEDs de debug (sin bloqueos)
                     pixels.clear();
-                    // TODO: volver a añadir LEDs
-                    // Ejemplo simplificado: LED1 según PM2.5, LED2 PM10, LED3 estado sistema, LED0 GPS
-                    // (aquí podrías reutilizar tu código original de colores)
+                    if(pm2_5 <= 12.0) {
+                        pixels.setPixelColor(1, COLOR_VERDE);
+                    } else if(pm2_5 <= 35.4) {
+                        pixels.setPixelColor(1, COLOR_NARANJA);
+                    } else {
+                        pixels.setPixelColor(1, COLOR_ROJO);
+                    }
+                    // LED 3 - PM10
+                    if(pm_10 <= 54.0) {
+                        pixels.setPixelColor(2, COLOR_VERDE);
+                    } else if(pm_10 <= 154.0) {
+                        pixels.setPixelColor(2, COLOR_NARANJA);
+                    } else {
+                        pixels.setPixelColor(2, COLOR_ROJO);
+                    }
+                    // LED 4 - Estado del sistema
+                    bool sistema_ok = true;
+                    // Verificar SPS30
+                    if(ret < 0) {
+                        pixels.setPixelColor(3, COLOR_ROJO);
+                        sistema_ok = false;
+                    }
+                    // Verificar BME280
+                    else if(!bme.begin(0x76, &I2CBME)) {
+                        pixels.setPixelColor(3, COLOR_NARANJA);
+                        sistema_ok = false;
+                    }
+                    // Verificar SD
+                    else if(!SD.begin(CS_PIN)) {
+                        pixels.setPixelColor(3, COLOR_AMARILLO);
+                        sistema_ok = false;
+                    }
+                    else {
+                        pixels.setPixelColor(3, COLOR_AZUL);
+                    }
                     pixels.show();
                     dcTimestamp = millis();
                     dcStage = DC_WAIT;
@@ -370,38 +404,80 @@ void loop(){
         }
 
         case WIFI_CONNECTION: {
-            /*
-                * WiFiManager con detección de error
-            */
-            WiFi.mode(WIFI_STA);
-            WiFiManager wm;
-            const int MAX_INTENTOS_WIFI = 3;
-            int intentos = 0;
-            // Intenta conectar automáticamente con las redes guardadas
-            bool conectado = wm.autoConnect(AP_NAME, PASSWORD);
-            while (!conectado && intentos < MAX_INTENTOS_WIFI) {
-              Serial.printf("Intento de conexión fallido #%d\n", intentos + 1);
-              delay(100);
-              conectado = (WiFi.status() == WL_CONNECTED);
-              intentos++;
-              Serial.printf("Intentos: %d",intentos);
-            }
-            if (!conectado) {
-              Serial.println("No se pudo conectar tras varios intentos. Borrando configuración WiFi.");
-              wm.resetSettings(); // borra SSID/password de la NVS
-              delay(1000);
-              ESP.restart();  
-            }
-            Serial.println("Conectado correctamente a WiFi");
-            currentMode  = SEND_DATA;
+          /*
+              * WiFiManager con detección de error
+          */
+          WiFi.mode(WIFI_STA);
+          WiFiManager wm;
+          const int MAX_INTENTOS_WIFI = 3;
+          int intentos = 0;
+          // Intenta conectar automáticamente con las redes guardadas
+          bool conectado = wm.autoConnect(AP_NAME, PASSWORD);
+          while (!conectado && intentos < MAX_INTENTOS_WIFI) {
+            Serial.printf("Intento de conexión fallido #%d\n", intentos + 1);
+            delay(100);
+            conectado = (WiFi.status() == WL_CONNECTED);
+            intentos++;
+            Serial.printf("Intentos: %d",intentos);
+          }
+          if (!conectado) {
+            Serial.println("No se pudo conectar tras varios intentos. Borrando configuración WiFi.");
+            wm.resetSettings(); // borra SSID/password de la NVS
+            delay(1000);
+            ESP.restart();  
+          }
+          Serial.println("Conectado correctamente a WiFi");
+          currentMode  = SEND_DATA;
         break;
         }   
           
-        case SEND_DATA:
-            do {
-                Serial.println("Mandando datos");
-            } while (true == false);
+        case SEND_DATA: {
+          // 1) Abre el fichero con los datos
+          File csvFile = SD.open(DATA_FILENAME, FILE_READ);
+          if (!csvFile) {
+              Serial.println("Error abriendo datos para envío");
+              currentMode = IDLE;
+              break;
+          }
+        
+          // 2) Prepara HTTPClient
+          HTTPClient http;
+          const char* serverUrl = "http://<TU_SERVIDOR>/upload.php"; //TODO: Cambiar por mi servidor (tadavía no se cual es)
+          http.begin(serverUrl);
+          String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+          http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+        
+          // 3) Obtén el stream para escribir el body
+          WiFiClient * stream = http.getStreamPtr();
+        
+          // 4) Cabecera multipart
+          stream->print("--" + boundary + "\r\n");
+          stream->print("Content-Disposition: form-data; name=\"csv\"; filename=\"datos.txt\"\r\n");
+          stream->print("Content-Type: text/csv\r\n\r\n");
+        
+          // 5) Vuelca todo el CSV
+          while (csvFile.available()) {
+            stream->write(csvFile.read());
+          }
+          csvFile.close();
+        
+          // 6) Cierre de boundary
+          stream->print("\r\n--" + boundary + "--\r\n");
+        
+          // 7) Envía la petición
+          int httpCode = http.sendRequest("POST");
+          if (httpCode > 0) {
+            String payload = http.getString();
+            Serial.printf("HTTP %d: %s\n", httpCode, payload.c_str());
+          } else {
+            Serial.printf("Error POST: %d\n", httpCode);
+          }
+          http.end();
+        
+          // 8) Vuelve a IDLE (y si quieres, eliminar o reinicializar el fichero)
+          currentMode = IDLE;
         break;
+        }
     }
 }
 
