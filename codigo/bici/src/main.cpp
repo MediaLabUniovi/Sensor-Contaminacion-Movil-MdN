@@ -81,6 +81,7 @@ const int8_t TIME_OFFSET_H = 1;  // Desfase de tiempo entre hora local y hora me
 const int BME_SDA = 13; // I2C SDA
 const int BME_SCL = 14; // I2C SCL 
 bool bme_ok = false;
+bool bmp_ok = false;
 bool SD_ok = false;
 // SD Card Pins (HSPI)
 const int SDI_PIN = 19;     // MISO
@@ -103,6 +104,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 // Fichero tarjeta SD
 const char* DATA_FILENAME = "/datos.txt"; // Nombre del fichero donde almacenaremos datos en la SD
 //-------------------------- Variables globales ----------------------------
+const uint32_t TIEMPO_ENTRE_MEDIDAS = 5 * 60 * 1000 // 5 minutos
 // BME280
 TwoWire I2CBME(1);  // Usar bus I2C 1
 Adafruit_BME280 bme; // Objeto BME280
@@ -150,13 +152,16 @@ void setup(){
     // ----------------- INICIALIZAR BME280 EN Wire1 -----------------
     I2CBME.setPins(BME_SDA, BME_SCL);
     I2CBME.begin();
+    bme_ok = true;
+    bmp_ok = true;
     if (!bme.begin(0x76, &I2CBME) && !bme.begin(0x77, &I2CBME)) {  // 0x76 es dirección I2C común
         Serial.println("Could not find BME280 sensor!");
+        bme_ok = false;
     } else if (!bmp.begin(0x76) && !bmp.begin(0x77)){
         Serial.println("Could not find BMP280 sensor!");
-        //while(1) delay(1000); // TODO: quitarlo, me lo salto por las pruebas
+        bmp_ok = false;
     }
-    bme_ok = false; //!true
+
     Serial.println("[BME] BME280 encontrado. Humedad disponible");
     delay(2000);
     // ---------------------- sensor particulas ----------------------
@@ -398,8 +403,13 @@ void loop(){
                       } else if(!SD_ok) { //Si está la SD funcionando (redundante)
                           pixels.setPixelColor(2, COLOR_AMARILLO);
                           sistema_ok = false;
-                      } else {
+                      } else if (!bmp_ok) {
                           pixels.setPixelColor(2, COLOR_AZUL);
+                          sistema_ok = false;
+                      if (sistema_ok)
+                          pixels.setPixelColor(2, COLOR_VERDE);
+                      } else {
+                        pixels.setPixelColor(3, COLOR_ROJO)
                       }
                       pixels.show();
                     } else { // Si no hay GPS secuencia de LEDS y volvemos a Ver si hay señal GPS
@@ -412,8 +422,8 @@ void loop(){
                 
                 case DC_WAIT:
                     // Esperamos 5 s antes de reiniciar la recolección
-                    if (millis() - dcTimestamp >= 5000) { // TODO: Cambiar esto por más tiempo
-                       // Si quisieramos dormir el micro sería aquí, luego al despertarse miramos la causa, si es por tiempo saltamos directamente al data recollection y si es por botón miraríamos si pasar a wifi o no.
+                    if (millis() - dcTimestamp >= TIEMPO_ENTRE_MEDIDAS) {
+                        //% Si quisieramos dormir el micro sería aquí, luego al despertarse miramos la causa, si es por tiempo saltamos directamente al data recollection y si es por botón miraríamos si pasar a wifi o no.
                         Serial.println("Volvemos a IDLE");
                         dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
                     }
