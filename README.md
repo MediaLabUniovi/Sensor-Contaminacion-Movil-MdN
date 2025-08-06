@@ -8,19 +8,22 @@ Al encender el dispositivo, aparecerá un LED encendido en verde, si la iniciali
 
 Si se pulsa el botón durante 3 segundos, entonces aparecerá un tercer LED en verde, eso significa que el sensor empieza a recolectar datos. Aquí puede aparecer un secuecnia de luces rojas cada cierto tiempo (indicando que no hay señal GPS y por tanto, no se están recolectando datos) o 3 LEDs que indican el estado de las medidas según la siguiente tabla:
 
-| LED (pixel index) | Función           | Condición                                 | Color      |
-|-------------------|-------------------|-------------------------------------------|------------|
-| **0**             | PM₂.₅             | ≤ 12.0 µg/m³                              | Verde      |
-|                   |                   | 12.1 – 35.4 µg/m³                         | Naranja    |
-|                   |                   | > 35.4 µg/m³                              | Rojo       |
-| **1**             | PM₁₀              | ≤ 54.0 µg/m³                              | Verde      |
-|                   |                   | 54.1 – 154.0 µg/m³                        | Naranja    |
-|                   |                   | > 154.0 µg/m³                             | Rojo       |
-| **2**             | Estado del sistema| `ret < 0` (error SPS30)                   | Rojo       |
-|                   |                   | `!bme_ok` (BME280 no inicializado)        | Naranja    |
-|                   |                   | `!SD_ok` (SD no accesible)                | Amarillo   |
-|                   |                   | — ninguna de las anteriores (todo OK)     | Azul       |
-| **0–4**           | Sin señal GPS     | `newDataFlag == false`                    | Parpadeo Rojo (todos) |
+| LED (pixel index) | Función                | Condición                                      | Color      |
+|-------------------|------------------------|------------------------------------------------|------------|
+| **0**             | PM₂.₅                  | ≤ 12.0 µg/m³                                   | Verde      |
+|                   |                        | 12.1 – 35.4 µg/m³                              | Naranja    |
+|                   |                        | > 35.4 µg/m³                                   | Rojo       |
+| **1**             | PM₁₀                   | ≤ 54.0 µg/m³                                   | Verde      |
+|                   |                        | 54.1 – 154.0 µg/m³                             | Naranja    |
+|                   |                        | > 154.0 µg/m³                                  | Rojo       |
+| **2**             | Estado detallado       | `ret < 0` (error SPS30)                        | Rojo       |
+|                   |                        | `!bme_ok` (BME280 no inicializado)             | Naranja    |
+|                   |                        | `!SD_ok` (SD no accesible)                     | Amarillo   |
+|                   |                        | `!bmp_ok` (BMP/BME presente pero falla)        | Azul       |
+|                   |                        | **ninguna** de las anteriores (todo OK)        | Verde      |
+| **3**             | Indicador de fallo     | `sistema_ok == false` (cualquier error arriba) | Rojo       |
+| **0–4**           | Sin señal GPS          | `newDataFlag == false`                         | Parpadeo Rojo (todos) |
+
 
 
 Si después de hacer estas medidas se vuelve a mantener el botón durante 3 segundos entonces pasamos al modo de conexión WiFi (esto se indicará con un cuarto LED en verde). El sensor buscará si tiene una red WiFi ya guardada a la que conectarse y si no iniciará su proprio punto de acceso con nombre SensorMovil y contraseña RetoTicLab. Deberemos conectarnos a ese punto de acceso y meter las credenciales de red a la que queramos que se conecte nuestro dispositivo. Una vez hecho, si la conexión resulta correcta, se nos indicará que está mandando datos con un quinto LED en verde.
