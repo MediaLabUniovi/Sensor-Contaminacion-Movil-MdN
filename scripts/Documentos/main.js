@@ -20,7 +20,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-
   // Inicialización del mapa centrado en Oviedo
   const map = L.map('map').setView([43.36, -5.84], 13);
 

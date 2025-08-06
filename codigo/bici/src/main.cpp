@@ -21,6 +21,7 @@
 // BME280 (Temperatura, Presión & Humedad)
 #include <Wire.h>    
 #include <Adafruit_BME280.h>   
+#include <Adafruit_BMP280.h>
 
 //LEDs
 #include <Adafruit_NeoPixel.h>
@@ -29,17 +30,18 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
+#include <WiFiClientSecure.h>
 
 // Funciones
 #include "mdc_contaminacion.hpp"
 #include "LongPress.h"
 //-------------------------- Definición de enums --------------------------
 enum Mode: uint8_t { // Enumeración para la máquina de estados general
-    IDLE = 0,
-    PROCESS_LONG_PRESS,
-    DATA_RECOLLECTION,
-    WIFI_CONNECTION,
-    SEND_DATA
+  IDLE = 0,
+  PROCESS_LONG_PRESS,
+  DATA_RECOLLECTION,
+  WIFI_CONNECTION,
+  SEND_DATA
 };
 enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
   DC_IDLE = 0,
@@ -56,7 +58,7 @@ enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
 const char* AP_NAME = "SensorMovil";
 const char* PASSWORD = "RetoTicLab";
 // Botón
-#define USER_BUTTON (25)
+#define USER_BUTTON (27)
 // Parámetros de muestreo y pulsación larga
 const unsigned long SAMPLE_INTERVAL_MS = 20;         // Intervalo de muestreo (ms)
 const uint8_t       STABLE_SAMPLES_REQUIRED = 3;     // Lecturas consecutivas para confirmar cambio
@@ -76,9 +78,10 @@ const uint32_t HARDWARE_BAUDRATE = 115200;      // Baudios Terminal Serie Hardwa
 const uint32_t GPS_BAUDRATE = 9600;        // Baudios Terminal Serie Software
 const int8_t TIME_OFFSET_H = 1;  // Desfase de tiempo entre hora local y hora medida (+1 hora)
 // BME280
-const int BME_SDA = 14; // I2C SDA
-const int BME_SCL = 13; // I2C SCL 
+const int BME_SDA = 13; // I2C SDA
+const int BME_SCL = 14; // I2C SCL 
 bool bme_ok = false;
+bool SD_ok = false;
 // SD Card Pins (HSPI)
 const int SDI_PIN = 19;     // MISO
 #define MISO_PIN  (SDI_PIN)
@@ -87,7 +90,7 @@ const int SDO_PIN = 23;     // MOSI
 const int CLK_PIN = 18;     // SCK
 const int CS_PIN = 5;       // SS  
 //LEDs
-#define PIN         (27)
+#define PIN         (26)
 #define NUMPIXELS   (5)    // Cantidad de LEDs
 #define BRIGHTNESS  (50)    // Brillo de los LEDs (0-255)
 // Definición de colores
@@ -103,6 +106,7 @@ const char* DATA_FILENAME = "/datos.txt"; // Nombre del fichero donde almacenare
 // BME280
 TwoWire I2CBME(1);  // Usar bus I2C 1
 Adafruit_BME280 bme; // Objeto BME280
+Adafruit_BMP280 bmp(&I2CBME);
 // Módulo GPS
 TinyGPS GPS;        // Objeto GPS        
 uint32_t time_to_connect_ms = 0;   // Medida del tiempo de conexión a satélite
@@ -110,9 +114,13 @@ bool first_connect = false;     // Flag para establecer que ya ha habido una con
 // Máquina de estados
 volatile Mode currentMode  = IDLE;
 Mode          previousMode = IDLE;
+int16_t ret;
+float pm2_5;
+float pm_10;
 //--------------------------------------------------------------------------
 
 void ledSequence();
+void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs);
 
 void IRAM_ATTR isr_button_pressed(){
     detachInterrupt(digitalPinToInterrupt(USER_BUTTON));
@@ -144,13 +152,14 @@ void setup(){
     I2CBME.begin();
     if (!bme.begin(0x76, &I2CBME) && !bme.begin(0x77, &I2CBME)) {  // 0x76 es dirección I2C común
         Serial.println("Could not find BME280 sensor!");
-        while(1) delay(1000);
+    } else if (!bmp.begin(0x76) && !bmp.begin(0x77)){
+        Serial.println("Could not find BMP280 sensor!");
+        //while(1) delay(1000); // TODO: quitarlo, me lo salto por las pruebas
     }
-    bme_ok = true;
+    bme_ok = false; //!true
     Serial.println("[BME] BME280 encontrado. Humedad disponible");
     delay(2000);
     // ---------------------- sensor particulas ----------------------
-    int16_t ret;
     uint8_t auto_clean_days = 4;
     uint32_t auto_clean;
     sensirion_i2c_init();
@@ -180,6 +189,7 @@ void setup(){
     Serial.println("[SD] Montaje de tarjeta SD fallido.");
     delay(2000);    // Esperar 2s
     }
+    SD_ok = true;
     uint8_t cardType = SD.cardType();
     if(cardType == CARD_NONE){
         Serial.println("[SD] No hay tarjeta SD.");
@@ -198,20 +208,27 @@ void setup(){
     uint64_t cardSize = SD.cardSize() / (1024 * 1024);    // Megabytes
     Serial.println("[SD] SD Card Size: " + String(cardSize) + "MB");    
     // Fichero de datos
+    //! Esto es un poco burro, cualquier reseteo va a borrar el archivo en la tarjeta 
+    //? Dejarlo a elección del usuario (pero solo hay un botón!)
     File root = SD.open(DATA_FILENAME); // Comprobamos si existe el fichero de datos
     if(!root){  // Si no existe lo creamos y preparamos la primera línea
         Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" no encontrado, creándolo...");
         writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n"); // Preparamos el fichero con la primera línea
     }
     else {
-        Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" ya creado.");
+        deleteFile(SD, DATA_FILENAME);
+        Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" ya creado, borrandolo y creando uno nuevo.");
+        writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n");
     }
+    root.close(); // Después de crearlo se cierra
 }
 
 void loop(){
     switch (currentMode) {
         case IDLE:
-            
+            pixels.setPixelColor(1, COLOR_VERDE);
+            pixels.show(); 
+
         break;
 
         case PROCESS_LONG_PRESS: {
@@ -261,7 +278,6 @@ void loop(){
               dcStage = DC_IDLE ;
               break;
             }
-        
             switch (dcStage) {
                 case DC_IDLE :
                     Serial.println("[GPS] Iniciando lectura 1s...");
@@ -333,6 +349,8 @@ void loop(){
                       struct sps30_measurement pm;
                       ret = sps30_read_measurement(&pm);
                       if (ret >= 0) {
+                        pm2_5 = pm.mc_2p5;
+                        pm_10 = pm.mc_10p0 - pm.mc_2p5;
                         dataBuffer += String(pm.mc_2p5) + ";" 
                                     + String(pm.mc_10p0 - pm.mc_2p5) + "\n";
                       }
@@ -349,52 +367,53 @@ void loop(){
                     dcStage     = DC_UPDATE_LEDS;
                 break;
                 
-                case DC_UPDATE_LEDS:
+                case DC_UPDATE_LEDS: {
                     // Actualizo LEDs de debug (sin bloqueos)
-                    pixels.clear();
-                    if(pm2_5 <= 12.0) {
-                        pixels.setPixelColor(1, COLOR_VERDE);
-                    } else if(pm2_5 <= 35.4) {
-                        pixels.setPixelColor(1, COLOR_NARANJA);
-                    } else {
-                        pixels.setPixelColor(1, COLOR_ROJO);
+                    if (newDataFlag){
+                      pixels.clear();
+                      if(pm2_5 <= 12.0) {
+                          pixels.setPixelColor(0, COLOR_VERDE);
+                      } else if(pm2_5 <= 35.4) {
+                          pixels.setPixelColor(0, COLOR_NARANJA);
+                      } else {
+                          pixels.setPixelColor(0, COLOR_ROJO);
+                      }
+                      // LED 3 - PM10
+                      if(pm_10 <= 54.0) {
+                          pixels.setPixelColor(1, COLOR_VERDE);
+                      } else if(pm_10 <= 154.0) {
+                          pixels.setPixelColor(1, COLOR_NARANJA);
+                      } else {
+                          pixels.setPixelColor(1, COLOR_ROJO);
+                      }
+                      // LED 4 - Estado del sistema
+                      bool sistema_ok = true;
+                      // Verificar SPS30 (redundante)
+                      if (ret < 0) {
+                          pixels.setPixelColor(2, COLOR_ROJO);
+                          sistema_ok = false;
+                      } else if(!bme_ok) { //Si está el BME funcionando (redundante)
+                          pixels.setPixelColor(2, COLOR_NARANJA);
+                          sistema_ok = false;
+                      } else if(!SD_ok) { //Si está la SD funcionando (redundante)
+                          pixels.setPixelColor(2, COLOR_AMARILLO);
+                          sistema_ok = false;
+                      } else {
+                          pixels.setPixelColor(2, COLOR_AZUL);
+                      }
+                      pixels.show();
+                    } else { // Si no hay GPS secuencia de LEDS y volvemos a Ver si hay señal GPS
+                      blinking_led_sequence(COLOR_ROJO,3,250);
                     }
-                    // LED 3 - PM10
-                    if(pm_10 <= 54.0) {
-                        pixels.setPixelColor(2, COLOR_VERDE);
-                    } else if(pm_10 <= 154.0) {
-                        pixels.setPixelColor(2, COLOR_NARANJA);
-                    } else {
-                        pixels.setPixelColor(2, COLOR_ROJO);
-                    }
-                    // LED 4 - Estado del sistema
-                    bool sistema_ok = true;
-                    // Verificar SPS30
-                    if(ret < 0) {
-                        pixels.setPixelColor(3, COLOR_ROJO);
-                        sistema_ok = false;
-                    }
-                    // Verificar BME280
-                    else if(!bme.begin(0x76, &I2CBME)) {
-                        pixels.setPixelColor(3, COLOR_NARANJA);
-                        sistema_ok = false;
-                    }
-                    // Verificar SD
-                    else if(!SD.begin(CS_PIN)) {
-                        pixels.setPixelColor(3, COLOR_AMARILLO);
-                        sistema_ok = false;
-                    }
-                    else {
-                        pixels.setPixelColor(3, COLOR_AZUL);
-                    }
-                    pixels.show();
                     dcTimestamp = millis();
                     dcStage = DC_WAIT;
                 break;
+                }
                 
                 case DC_WAIT:
                     // Esperamos 5 s antes de reiniciar la recolección
-                    if (millis() - dcTimestamp >= 5000) {
+                    if (millis() - dcTimestamp >= 5000) { // TODO: Cambiar esto por más tiempo
+                       // Si quisieramos dormir el micro sería aquí, luego al despertarse miramos la causa, si es por tiempo saltamos directamente al data recollection y si es por botón miraríamos si pasar a wifi o no.
                         Serial.println("Volvemos a IDLE");
                         dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
                     }
@@ -405,8 +424,13 @@ void loop(){
 
         case WIFI_CONNECTION: {
           /*
-              * WiFiManager con detección de error
+            * WiFiManager con detección de error
           */
+          pixels.clear();
+          pixels.setPixelColor(0, COLOR_VERDE);
+          pixels.setPixelColor(1, COLOR_VERDE);
+          pixels.setPixelColor(2, COLOR_VERDE);
+          pixels.show();
           WiFi.mode(WIFI_STA);
           WiFiManager wm;
           const int MAX_INTENTOS_WIFI = 3;
@@ -424,14 +448,21 @@ void loop(){
             Serial.println("No se pudo conectar tras varios intentos. Borrando configuración WiFi.");
             wm.resetSettings(); // borra SSID/password de la NVS
             delay(1000);
-            ESP.restart();  
+            blinking_led_sequence(COLOR_ROJO,5,500);
+            break; //? estará bien?
           }
           Serial.println("Conectado correctamente a WiFi");
           currentMode  = SEND_DATA;
         break;
-        }   
-          
+        }
+
         case SEND_DATA: {
+          pixels.clear();
+          pixels.setPixelColor(0, COLOR_VERDE);
+          pixels.setPixelColor(1, COLOR_VERDE);
+          pixels.setPixelColor(2, COLOR_VERDE);
+          pixels.setPixelColor(3, COLOR_VERDE);
+          pixels.show();
           // 1) Abre el fichero con los datos
           File csvFile = SD.open(DATA_FILENAME, FILE_READ);
           if (!csvFile) {
@@ -439,50 +470,115 @@ void loop(){
               currentMode = IDLE;
               break;
           }
+          size_t fileSize = csvFile.size();
         
-          // 2) Prepara HTTPClient
-          HTTPClient http;
-          const char* serverUrl = "http://<TU_SERVIDOR>/upload.php"; //TODO: Cambiar por mi servidor (tadavía no se cual es)
-          http.begin(serverUrl);
-          String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
-          http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+          // 2) Prepara delimitadores y C-strings
+          static const char host[]     = "medialab-uniovi.es";
+          static const uint16_t port   = 443;
+          static const char path[]     = "/bike_pollution/upload.php";
+          static const char boundary[] = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
         
-          // 3) Obtén el stream para escribir el body
-          WiFiClient * stream = http.getStreamPtr();
+          // Cabecera del multipart
+          char preamble[256];
+          int plen = snprintf(preamble, sizeof(preamble),
+              "--%s\r\n"
+              "Content-Disposition: form-data; name=\"csv\"; filename=\"datos.txt\"\r\n"
+              "Content-Type: text/csv\r\n\r\n",
+              boundary);
+          if (plen < 0 || plen >= sizeof(preamble)) {
+              Serial.println("Error construyendo preamble");
+              csvFile.close();
+              currentMode = IDLE;
+              break;
+          }
         
-          // 4) Cabecera multipart
-          stream->print("--" + boundary + "\r\n");
-          stream->print("Content-Disposition: form-data; name=\"csv\"; filename=\"datos.txt\"\r\n");
-          stream->print("Content-Type: text/csv\r\n\r\n");
+          // Cierre del multipart
+          char ending[64];
+          int elen = snprintf(ending, sizeof(ending),
+              "\r\n--%s--\r\n",
+              boundary);
+          if (elen < 0 || elen >= sizeof(ending)) {
+              Serial.println("Error construyendo ending");
+              csvFile.close();
+              currentMode = IDLE;
+              break;
+          }
         
-          // 5) Vuelca todo el CSV
+          // 3) Calcula Content-Length
+          size_t contentLength = (size_t)plen + fileSize + (size_t)elen;
+        
+          // 4) Conecta vía TLS
+          WiFiClientSecure client;
+          client.setInsecure();  // acepta cualquier certificado
+          Serial.printf("Conectando a %s:%u…\n", host, port);
+          if (!client.connect(host, port)) {
+              Serial.println("Error al conectar TLS");
+              csvFile.close();
+              currentMode = IDLE;
+              break;
+          }
+        
+          // 5) Envía petición HTTP/1.1
+          client.print("POST ");
+          client.print(path);
+          client.print(" HTTP/1.1\r\n");
+          client.print("Host: ");
+          client.print(host);
+          client.print("\r\n");
+          client.print("User-Agent: ESP32\r\n");
+          client.print("Connection: close\r\n");
+          client.print("Content-Type: multipart/form-data; boundary=");
+          client.print(boundary);
+          client.print("\r\n");
+          client.print("Content-Length: ");
+          client.print(contentLength);
+          client.print("\r\n\r\n");
+        
+          // 6) Stream del cuerpo
+          // 6a) Preamble
+          client.write((const uint8_t*)preamble, plen);
+        
+          // 6b) CSV en bloques
+          uint8_t buf[256];
           while (csvFile.available()) {
-            stream->write(csvFile.read());
+              size_t n = csvFile.read(buf, sizeof(buf));
+              client.write(buf, n);
           }
           csvFile.close();
         
-          // 6) Cierre de boundary
-          stream->print("\r\n--" + boundary + "--\r\n");
+          // 6c) Ending
+          client.write((const uint8_t*)ending, elen);
         
-          // 7) Envía la petición
-          int httpCode = http.sendRequest("POST");
-          if (httpCode > 0) {
-            String payload = http.getString();
-            Serial.printf("HTTP %d: %s\n", httpCode, payload.c_str());
-          } else {
-            Serial.printf("Error POST: %d\n", httpCode);
+          // 7) Lee la respuesta del servidor
+          Serial.println("Esperando respuesta…");
+          // Espera la cabecera
+          unsigned long timeout = millis() + 5000;
+          while (!client.available() && millis() < timeout) {
+              delay(10);
           }
-          http.end();
+          if (!client.available()) {
+              Serial.println("Timeout leyendo respuesta");
+              client.stop();
+              currentMode = IDLE;
+              break;
+          }
         
-          // 8) Vuelve a IDLE (y si quieres, eliminar o reinicializar el fichero)
-          currentMode = IDLE;
+          // Imprime toda la respuesta
+          while (client.available()) {
+              String line = client.readStringUntil('\n');
+              Serial.println(line);
+          }
+        
+          client.stop();
+          blinking_led_sequence(COLOR_VERDE,3,500);          
+          ESP.restart(); // Se reinicia y borra el archivo en setup, revisar si se quiere hacer así.
         break;
-        }
+      }
     }
 }
 
 
-void ledSequence() {
+void ledSequence() { // Función que activa una secuencia de LEDs a la hora de hacer un cambio de estado.
   switch (currentMode) {
     case IDLE: // Para pasar a DATA_RECOLLECTION
       // Breve parpadeo amarillo en el LED 0
@@ -542,6 +638,18 @@ void ledSequence() {
       pixels.clear();
       pixels.setPixelColor(0, COLOR_VERDE);
       pixels.show();
-      break;
+    break;
+  }
+}
+
+void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs){
+  for (int i = 0; i < times; i++){
+    pixels.clear();
+    pixels.fill(color);
+    pixels.show();
+    delay(delayMs);
+    pixels.clear();
+    pixels.show();
+    delay(delayMs);
   }
 }
