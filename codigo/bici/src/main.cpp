@@ -206,29 +206,29 @@ void setup(){
         Serial.println("UNKNOWN");
     }
     uint64_t cardSize = SD.cardSize() / (1024 * 1024);    // Megabytes
-    Serial.println("[SD] SD Card Size: " + String(cardSize) + "MB");    
-    // Fichero de datos
-    //! Esto es un poco burro, cualquier reseteo va a borrar el archivo en la tarjeta 
-    //? Dejarlo a elección del usuario (pero solo hay un botón!)
-    File root = SD.open(DATA_FILENAME); // Comprobamos si existe el fichero de datos
-    if(!root){  // Si no existe lo creamos y preparamos la primera línea
-        Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" no encontrado, creándolo...");
-        writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n"); // Preparamos el fichero con la primera línea
-    }
-    else {
-        deleteFile(SD, DATA_FILENAME);
-        Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" ya creado, borrandolo y creando uno nuevo.");
-        writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n");
-    }
-    root.close(); // Después de crearlo se cierra
+    Serial.println("[SD] SD Card Size: " + String(cardSize) + "MB");        
 }
 
 void loop(){
     switch (currentMode) {
         case IDLE:
+            static bool once = true;
+            if (once){ // De esta forma nos aeguramos de que no se ejecuta este bloque de código más de una vez
+              once = false;
+              File root = SD.open(DATA_FILENAME); // Comprobamos si existe el fichero de datos
+              if(!root){  // Si no existe lo creamos y preparamos la primera línea
+                  Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" no encontrado, creándolo...");
+                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n"); // Preparamos el fichero con la primera línea
+              }
+              else {
+                  deleteFile(SD, DATA_FILENAME);
+                  Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" ya creado, borrandolo y creando uno nuevo.");
+                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n");
+              }
+              root.close(); // Después de crearlo se cierra 
+            }
             pixels.setPixelColor(1, COLOR_VERDE);
-            pixels.show(); 
-
+            pixels.show();
         break;
 
         case PROCESS_LONG_PRESS: {
