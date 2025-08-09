@@ -334,7 +334,15 @@ void loop(){
                         dataBuffer  += String(t,2) + ";" 
                                     + String(p,2) + ";"
                                     + String(h,2) + ";";
-                    } else {
+
+                    } else if (bmp_ok){
+                        float t = bme.readTemperature();
+                        float p = bme.readPressure() / 100.0F;
+                        dataBuffer  += String(t,2) + ";" 
+                                    + String(p,2) + ";"
+                                    + String(NAN,2) + ";";
+                    }
+                    else {
                         Serial.println("BME no inicializado, no es posible recoger datos");
                     }
                     // Ahora pasamos a leer partículas
@@ -588,6 +596,7 @@ void loop(){
 }
 
 
+//% Aquí me parece que no está entrando, revisar por qué.
 void ledSequence() { // Función que activa una secuencia de LEDs a la hora de hacer un cambio de estado.
   switch (currentMode) {
     case IDLE: // Para pasar a DATA_RECOLLECTION
