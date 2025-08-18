@@ -29,3 +29,6 @@ Si se pulsa el botón durante 3 segundos, entonces aparecerá un tercer LED en v
 Si después de hacer estas medidas se vuelve a mantener el botón durante 3 segundos entonces pasamos al modo de conexión WiFi (esto se indicará con un cuarto LED en verde). El sensor buscará si tiene una red WiFi ya guardada a la que conectarse y si no iniciará su proprio punto de acceso con nombre SensorMovil y contraseña RetoTicLab. Deberemos conectarnos a ese punto de acceso y meter las credenciales de red a la que queramos que se conecte nuestro dispositivo. Una vez hecho, si la conexión resulta correcta, se nos indicará que está mandando datos con un quinto LED en verde.
 
 Una vez que se hayan mandado todos los datos, habrá una secuencia de parpadeo en verde y el sistema volverá al principio. Los datos de la tarjeta SD se borrarán al pasar del modo standby al de recolección de datos.
+
+## Uso
+Actualmente el proyecto está hecho en VSCode con PlatformIO. Para una mejor lecutra de los comentarios se recomienda utilizar la extensión better comments con el Json de configuración que aparece en la carpeta codigo.
