@@ -2,7 +2,10 @@
  * Código proyecto de Sensor de Contaminación Móvil Reto TICLAB Mar de Niebla 2025
  *
  * Autor: José Luis Muñiz Traviesas; 28/01/25
- */
+*/
+// TODO: Cambiar secuencia de leds si se ve necesario, puede ser poco descriptivo para el usuario.
+// TODO: Si pierde conexión GPS no es capaz de vilver a captarla (solo pasa a veces).
+// TODO: Poner trapo separando sps30 y antena gps del resto del circuito
 // GPS
 #include "Arduino.h"
 #include <TinyGPS.h>            // https://github.com/neosarchizo/TinyGPS
@@ -51,7 +54,8 @@ enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
   DC_READ_PARTICLES,
   DC_WRITE_SD,
   DC_UPDATE_LEDS,
-  DC_WAIT
+  DC_WAIT,
+  DC_TRY_AGAIN
 };
 //------------------------- Definición de constantes -----------------------
 // WiFi
@@ -104,7 +108,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 // Fichero tarjeta SD
 const char* DATA_FILENAME = "/datos.txt"; // Nombre del fichero donde almacenaremos datos en la SD
 //-------------------------- Variables globales ----------------------------
-const uint32_t TIEMPO_ENTRE_MEDIDAS = 5 * 60 * 1000 // 5 minutos
+const uint32_t TIEMPO_ENTRE_MEDIDAS = 5 * 60 * 1000; // 5 minutos
 // BME280
 TwoWire I2CBME(1);  // Usar bus I2C 1
 Adafruit_BME280 bme; // Objeto BME280
@@ -115,13 +119,13 @@ uint32_t time_to_connect_ms = 0;   // Medida del tiempo de conexión a satélite
 bool first_connect = false;     // Flag para establecer que ya ha habido una conexión
 // Máquina de estados
 volatile Mode currentMode  = IDLE;
-Mode          previousMode = IDLE;
+volatile Mode previousMode = IDLE;
 int16_t ret;
 float pm2_5;
 float pm_10;
 //--------------------------------------------------------------------------
 
-void ledSequence();
+void ledSequence(Mode fromMode);
 void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs);
 
 void IRAM_ATTR isr_button_pressed(){
@@ -157,12 +161,18 @@ void setup(){
     if (!bme.begin(0x76, &I2CBME) && !bme.begin(0x77, &I2CBME)) {  // 0x76 es dirección I2C común
         Serial.println("Could not find BME280 sensor!");
         bme_ok = false;
-    } else if (!bmp.begin(0x76) && !bmp.begin(0x77)){
+    } 
+    if (!bmp.begin(0x76) && !bmp.begin(0x77)){
         Serial.println("Could not find BMP280 sensor!");
         bmp_ok = false;
-    }
+    } 
+    if (!bme_ok && !bmp_ok) {
+      Serial.println("No se ha encontado ningún dispositivo BME ni BMP");
+    } 
+    else if (bme_ok) Serial.println("BME280 encontrado. Humedad disponible");
+    else if (bmp_ok) Serial.println("BMP280 encontrado. Humedad no disponible");
+    else Serial.println("Ningún dispositivo encontrado");
 
-    Serial.println("[BME] BME280 encontrado. Humedad disponible");
     delay(2000);
     // ---------------------- sensor particulas ----------------------
     uint8_t auto_clean_days = 4;
@@ -237,31 +247,36 @@ void loop(){
         break;
 
         case PROCESS_LONG_PRESS: {
-            // Cada iteración medimos si hubo long‑press o si canceló (release antes de umbral)
-            LongPressResult res = checkLongPress(lpState, lpCfg);
-            if (res == LONG_PRESS_DETECTED) {
-              Serial.println(">> Pulsación larga detectada");
-              ledSequence();
-              // Transición según el modo anterior
-              if      (previousMode == IDLE)            currentMode = DATA_RECOLLECTION;
-              else if (previousMode == DATA_RECOLLECTION) currentMode = WIFI_CONNECTION;
-              else                                      currentMode = IDLE;
-
-              Serial.print("Cambiando a modo ");
-              Serial.println(currentMode);
-              // Rehabilita la ISR para la próxima pulsación
-              attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
-            }
-            else if (res == PRESS_CANCELLED) {
-              Serial.println(">> Pulsación cancelada (cortita)");
-              // Vuelves al modo previo
-              currentMode = previousMode;
-              Serial.print("Volviendo a modo ");
-              Serial.println(currentMode);
-              attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
-            }
-        break;
+          LongPressResult res = checkLongPress(lpState, lpCfg);
+          if (res == LONG_PRESS_DETECTED) {
+            Serial.println(">> Pulsación larga detectada");
+          
+            // Decide transición
+            Mode from = previousMode;
+            Mode to   = IDLE;
+            if      (from == IDLE)              to = DATA_RECOLLECTION;
+            else if (from == DATA_RECOLLECTION) to = WIFI_CONNECTION;
+            else                                to = IDLE;
+          
+            // Muestra la secuencia según el modo de origen
+            ledSequence(from);
+          
+            // Aplica el nuevo modo
+            currentMode = to;
+          
+            Serial.print("Cambiando a modo ");
+            Serial.println(currentMode);
+            attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
+          } else if (res == PRESS_CANCELLED) {
+            Serial.println(">> Pulsación cancelada (cortita)");
+            currentMode = previousMode;
+            Serial.print("Volviendo a modo ");
+            Serial.println(currentMode);
+            attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
+          }
+          break;
         }
+
 
         case DATA_RECOLLECTION: {
             // Variables estáticas para este caso
@@ -336,8 +351,8 @@ void loop(){
                                     + String(h,2) + ";";
 
                     } else if (bmp_ok){
-                        float t = bme.readTemperature();
-                        float p = bme.readPressure() / 100.0F;
+                        float t = bmp.readTemperature();
+                        float p = bmp.readPressure() / 100.0F;
                         dataBuffer  += String(t,2) + ";" 
                                     + String(p,2) + ";"
                                     + String(NAN,2) + ";";
@@ -414,17 +429,20 @@ void loop(){
                       } else if (!bmp_ok) {
                           pixels.setPixelColor(2, COLOR_AZUL);
                           sistema_ok = false;
-                      if (sistema_ok)
+                      }
+                      if (sistema_ok){
                           pixels.setPixelColor(2, COLOR_VERDE);
                       } else {
-                        pixels.setPixelColor(3, COLOR_ROJO)
+                        pixels.setPixelColor(3, COLOR_ROJO);
                       }
                       pixels.show();
+                      dcStage = DC_WAIT;
                     } else { // Si no hay GPS secuencia de LEDS y volvemos a Ver si hay señal GPS
                       blinking_led_sequence(COLOR_ROJO,3,250);
+                      dcStage = DC_TRY_AGAIN;
                     }
                     dcTimestamp = millis();
-                    dcStage = DC_WAIT;
+                    
                 break;
                 }
                 
@@ -432,6 +450,14 @@ void loop(){
                     // Esperamos 5 s antes de reiniciar la recolección
                     if (millis() - dcTimestamp >= TIEMPO_ENTRE_MEDIDAS) {
                         //% Si quisieramos dormir el micro sería aquí, luego al despertarse miramos la causa, si es por tiempo saltamos directamente al data recollection y si es por botón miraríamos si pasar a wifi o no.
+                        Serial.println("Volvemos a IDLE");
+                        dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
+                    }
+                break;
+
+                case DC_TRY_AGAIN:
+                    // Si venimos de un fallo de coenxión del GPS, solo esperamos 20 segundos.
+                    if (millis() - dcTimestamp >= 20000) {
                         Serial.println("Volvemos a IDLE");
                         dcStage = DC_IDLE ;           // volvemos al principio del flujo GPS→sensores
                     }
@@ -597,10 +623,11 @@ void loop(){
 
 
 //% Aquí me parece que no está entrando, revisar por qué.
-void ledSequence() { // Función que activa una secuencia de LEDs a la hora de hacer un cambio de estado.
-  switch (currentMode) {
-    case IDLE: // Para pasar a DATA_RECOLLECTION
-      // Breve parpadeo amarillo en el LED 0
+void ledSequence(Mode fromMode) {
+  pixels.clear();
+  pixels.show();
+  switch (fromMode) {
+    case IDLE: // Transición IDLE -> DATA_RECOLLECTION
       for (uint8_t i = 0; i < 2; i++) {
         pixels.setPixelColor(0, COLOR_AMARILLO);
         pixels.show();
@@ -611,11 +638,9 @@ void ledSequence() { // Función que activa una secuencia de LEDs a la hora de h
       }
       break;
 
-    case DATA_RECOLLECTION: // Para pasat a WIFI_CONNECTION
-      // Carrera de un LED azul adelante y atrás
+    case DATA_RECOLLECTION: // Transición DATA_RECOLLECTION -> WIFI_CONNECTION
       for (int dir = 0; dir < 2; dir++) {
         if (dir == 0) {
-          // adelante
           for (uint16_t i = 0; i < NUMPIXELS; i++) {
             pixels.clear();
             pixels.setPixelColor(i, COLOR_AZUL);
@@ -623,7 +648,6 @@ void ledSequence() { // Función que activa una secuencia de LEDs a la hora de h
             delay(250);
           }
         } else {
-          // atrás
           for (int16_t i = NUMPIXELS - 1; i >= 0; i--) {
             pixels.clear();
             pixels.setPixelColor(i, COLOR_AZUL);
@@ -634,32 +658,23 @@ void ledSequence() { // Función que activa una secuencia de LEDs a la hora de h
       }
       break;
 
-    case WIFI_CONNECTION:
-      // Parpadeo verde/rojo alterno en toda la tira
+    case WIFI_CONNECTION: // Transición WIFI_CONNECTION -> SEND_DATA (si quisieras)
       for (uint8_t k = 0; k < 4; k++) {
-        // verde
-        for (uint16_t i = 0; i < NUMPIXELS; i++) {
-          pixels.setPixelColor(i, COLOR_VERDE);
-        }
-        pixels.show();
-        delay(200);
-        // rojo
-        for (uint16_t i = 0; i < NUMPIXELS; i++) {
-          pixels.setPixelColor(i, COLOR_ROJO);
-        }
-        pixels.show();
-        delay(200);
+        for (uint16_t i = 0; i < NUMPIXELS; i++) pixels.setPixelColor(i, COLOR_VERDE);
+        pixels.show(); delay(200);
+        for (uint16_t i = 0; i < NUMPIXELS; i++) pixels.setPixelColor(i, COLOR_ROJO);
+        pixels.show(); delay(200);
       }
       break;
 
     default:
-      // Vuelve al estado “LED 0 verde encendido”
       pixels.clear();
       pixels.setPixelColor(0, COLOR_VERDE);
       pixels.show();
-    break;
+      break;
   }
 }
+
 
 void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs){
   for (int i = 0; i < times; i++){
