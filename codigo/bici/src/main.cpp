@@ -1,7 +1,7 @@
 /*
  * Código proyecto de Sensor de Contaminación Móvil Reto TICLAB Mar de Niebla 2025
  *
- * Autor: José Luis Muñiz Traviesas; 28/01/25
+ * Autor: José Luis Muñiz Traviesas, Miguel Enterría, Andrés Vilas Grela; 28/01/25
 */
 // TODO: Cambiar secuencia de leds si se ve necesario, puede ser poco descriptivo para el usuario.
 // TODO: Si pierde conexión GPS no es capaz de vilver a captarla (solo pasa a veces).
@@ -9,6 +9,7 @@
 // GPS
 #include "Arduino.h"
 #include <TinyGPS.h>            // https://github.com/neosarchizo/TinyGPS
+#include <time.h>               // Para manejo de RTC interno
 
 // Tarjeta SD
 #ifndef SD_INCLUDES
@@ -35,18 +36,15 @@
 #include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
 #include <WiFiClientSecure.h>
 
+// Configuración
+#include "config.h"
+
 // Funciones
+#include "functions.h"
 #include "mdc_contaminacion.hpp"
 #include "LongPress.h"
 //-------------------------- Definición de enums --------------------------
-enum Mode: uint8_t { // Enumeración para la máquina de estados general
-  IDLE = 0,
-  PROCESS_LONG_PRESS,
-  DATA_RECOLLECTION,
-  WIFI_CONNECTION,
-  SEND_DATA
-};
-enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
+enum DataRecolectStage : uint8_t { // Enumeración para recolección de datos
   DC_IDLE = 0,
   DC_READ_GPS,
   DC_PROCESS_GPS,
@@ -57,17 +55,7 @@ enum DataRecolectStage : uint8_t { // Enumeración para recoleción de datos
   DC_WAIT,
   DC_TRY_AGAIN
 };
-//------------------------- Definición de constantes -----------------------
-// WiFi
-const char* AP_NAME = "SensorMovil";
-const char* PASSWORD = "RetoTicLab";
-// Botón
-#define USER_BUTTON (27)
-// Parámetros de muestreo y pulsación larga
-const unsigned long SAMPLE_INTERVAL_MS = 20;         // Intervalo de muestreo (ms)
-const uint8_t       STABLE_SAMPLES_REQUIRED = 3;     // Lecturas consecutivas para confirmar cambio
-#define LONG_PRESS_THRESHOLD_MS (2000)
-// Configuración
+//------------------------- Configuración LongPress -----------------------
 LongPressConfig lpCfg = {
   .buttonPin = USER_BUTTON,
   .sampleIntervalMs = SAMPLE_INTERVAL_MS,
@@ -75,40 +63,16 @@ LongPressConfig lpCfg = {
   .longPressThresholdMs = LONG_PRESS_THRESHOLD_MS
 };
 LongPressState lpState;
-// Pines para GPS sobre UART2
-#define GPS_RX_PIN  (17)   // conecta al TX del módulo GPS
-#define GPS_TX_PIN  (16)   // conecta al RX del módulo GPS
-const uint32_t HARDWARE_BAUDRATE = 115200;      // Baudios Terminal Serie Hardware
-const uint32_t GPS_BAUDRATE = 9600;        // Baudios Terminal Serie Software
-const int8_t TIME_OFFSET_H = 1;  // Desfase de tiempo entre hora local y hora medida (+1 hora)
-// BME280
-const int BME_SDA = 13; // I2C SDA
-const int BME_SCL = 14; // I2C SCL 
+
+//-------------------------- Variables globales ----------------------------
+// Estados de sensores
 bool bme_ok = false;
 bool bmp_ok = false;
 bool SD_ok = false;
-// SD Card Pins (HSPI)
-const int SDI_PIN = 19;     // MISO
-#define MISO_PIN  (SDI_PIN)
-const int SDO_PIN = 23;     // MOSI
-#define MOSI_PIN  (SDO_PIN)
-const int CLK_PIN = 18;     // SCK
-const int CS_PIN = 5;       // SS  
-//LEDs
-#define PIN         (26)
-#define NUMPIXELS   (5)    // Cantidad de LEDs
-#define BRIGHTNESS  (50)    // Brillo de los LEDs (0-255)
-// Definición de colores
-#define COLOR_ROJO     0xFF0000
-#define COLOR_VERDE    0x00FF00
-#define COLOR_AZUL     0x0000FF
-#define COLOR_NARANJA  0xFF8000
-#define COLOR_AMARILLO 0xFFFF00
+
+// LEDs
 Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
-// Fichero tarjeta SD
-const char* DATA_FILENAME = "/datos.txt"; // Nombre del fichero donde almacenaremos datos en la SD
-//-------------------------- Variables globales ----------------------------
-const uint32_t TIEMPO_ENTRE_MEDIDAS = 5 * 60 * 1000; // 5 minutos
+
 // BME280
 TwoWire I2CBME(1);  // Usar bus I2C 1
 Adafruit_BME280 bme; // Objeto BME280
@@ -117,6 +81,7 @@ Adafruit_BMP280 bmp(&I2CBME);
 TinyGPS GPS;        // Objeto GPS        
 uint32_t time_to_connect_ms = 0;   // Medida del tiempo de conexión a satélite
 bool first_connect = false;     // Flag para establecer que ya ha habido una conexión
+bool rtc_synced = false;        // Flag para indicar si el RTC ya fue sincronizado con GPS
 // Máquina de estados
 volatile Mode currentMode  = IDLE;
 volatile Mode previousMode = IDLE;
@@ -124,9 +89,6 @@ int16_t ret;
 float pm2_5;
 float pm_10;
 //--------------------------------------------------------------------------
-
-void ledSequence(Mode fromMode);
-void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs);
 
 void IRAM_ATTR isr_button_pressed(){
     detachInterrupt(digitalPinToInterrupt(USER_BUTTON));
@@ -152,76 +114,23 @@ void setup(){
     Serial.println(GPS_BAUDRATE);
     delay(500);
     pinMode(USER_BUTTON, INPUT_PULLUP);
+    pinMode(BATTERY_PIN, INPUT);  // Configurar pin de batería como entrada
     attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed, FALLING);
-    // ----------------- INICIALIZAR BME280 EN Wire1 -----------------
-    I2CBME.setPins(BME_SDA, BME_SCL);
-    I2CBME.begin();
-    bme_ok = true;
-    bmp_ok = true;
-    if (!bme.begin(0x76, &I2CBME) && !bme.begin(0x77, &I2CBME)) {  // 0x76 es dirección I2C común
-        Serial.println("Could not find BME280 sensor!");
-        bme_ok = false;
-    } 
-    if (!bmp.begin(0x76) && !bmp.begin(0x77)){
-        Serial.println("Could not find BMP280 sensor!");
-        bmp_ok = false;
-    } 
-    if (!bme_ok && !bmp_ok) {
-      Serial.println("No se ha encontado ningún dispositivo BME ni BMP");
-    } 
-    else if (bme_ok) Serial.println("BME280 encontrado. Humedad disponible");
-    else if (bmp_ok) Serial.println("BMP280 encontrado. Humedad no disponible");
-    else Serial.println("Ningún dispositivo encontrado");
-
+    
+    // ----------------- INICIALIZAR SENSORES -----------------
+    initBME280(bme, bmp, I2CBME, bme_ok, bmp_ok);
     delay(2000);
-    // ---------------------- sensor particulas ----------------------
-    uint8_t auto_clean_days = 4;
-    uint32_t auto_clean;
-    sensirion_i2c_init();
-    while (sps30_probe() != 0) {
-        Serial.print("SPS sensor probing failed\n");
-        delay(500);
-    }
-    #ifndef PLOTTER_FORMAT
-    Serial.print("SPS sensor probing successful\n");
-    #endif /* PLOTTER_FORMAT */
-    ret = sps30_set_fan_auto_cleaning_interval_days(auto_clean_days);
-    if (ret) {
-        Serial.print("error setting the auto-clean interval: ");
-        Serial.println(ret);
-    }
-    ret = sps30_start_measurement();
-    if (ret < 0) {
-        Serial.print("error starting measurement\n");
-    }
-    #ifndef PLOTTER_FORMAT
-    Serial.print("measurements started\n");
-    #endif /* PLOTTER_FORMAT */
+    
+    // Sensor partículas
+    initSPS30(ret);
     delay(500);
+    
     // Tarjeta SD
-    SPI.begin(CLK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-    while(!SD.begin(CS_PIN)){
-    Serial.println("[SD] Montaje de tarjeta SD fallido.");
-    delay(2000);    // Esperar 2s
-    }
-    SD_ok = true;
-    uint8_t cardType = SD.cardType();
-    if(cardType == CARD_NONE){
-        Serial.println("[SD] No hay tarjeta SD.");
+    SD_ok = initSDCard();
+    if (!SD_ok) {
+        Serial.println("[SD] Error crítico: No se pudo inicializar la SD.");
         while(1) delay(1000);
-    }
-    Serial.print("[SD] SD Card Type: ");
-    if(cardType == CARD_MMC){
-        Serial.println("MMC");
-    } else if(cardType == CARD_SD){
-        Serial.println("SDSC");
-    } else if(cardType == CARD_SDHC){
-        Serial.println("SDHC");
-    } else {
-        Serial.println("UNKNOWN");
-    }
-    uint64_t cardSize = SD.cardSize() / (1024 * 1024);    // Megabytes
-    Serial.println("[SD] SD Card Size: " + String(cardSize) + "MB");        
+    }        
 }
 
 void loop(){
@@ -233,12 +142,12 @@ void loop(){
               File root = SD.open(DATA_FILENAME); // Comprobamos si existe el fichero de datos
               if(!root){  // Si no existe lo creamos y preparamos la primera línea
                   Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" no encontrado, creándolo...");
-                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n"); // Preparamos el fichero con la primera línea
+                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5;PM10;Bateria\n"); // Preparamos el fichero con la primera línea
               }
               else {
                   deleteFile(SD, DATA_FILENAME);
                   Serial.println("[SD] Fichero \"" + String(DATA_FILENAME) + "\" ya creado, borrandolo y creando uno nuevo.");
-                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5\n");
+                  writeFile(SD, DATA_FILENAME, "Latitud;Longitud;Año;Mes;Día;hh:mm:ss;Temp;Pres;Hum;PM2.5;PM10;Bateria\n");
               }
               root.close(); // Después de crearlo se cierra 
             }
@@ -259,7 +168,7 @@ void loop(){
             else                                to = IDLE;
           
             // Muestra la secuencia según el modo de origen
-            ledSequence(from);
+            ledSequence(from, pixels);
           
             // Aplica el nuevo modo
             currentMode = to;
@@ -332,59 +241,43 @@ void loop(){
                         GPS.f_get_position(&lat, &lon, &age);
                         dataBuffer += String(lat,6) + ";" + String(lon,6) + ";";
                         GPS.crack_datetime(&year,&month,&day,&hour,&minute,&second,NULL,NULL);
-                        hour = (hour + TIME_OFFSET_H) % 24;
-                        dataBuffer += String(year) + ";" + String(month) + ";" + String(day) + ";"
-                                    + String(hour) + ":" + String(minute) + ":" + String(second) + ";";
+                        
+                        // Sincronizar RTC interno la primera vez que obtenemos datos GPS válidos
+                        if (!rtc_synced) {
+                            syncRTCWithGPS(year, month, day, hour, minute, second);
+                            rtc_synced = true;
+                        }
+                        
+                        // Obtener fecha y hora del RTC interno
+                        dataBuffer += getCurrentDateString() + ";" + getCurrentTimeString() + ";";
                         dcStage     = DC_READ_BME;
                     } else {
-                        dcStage     = DC_UPDATE_LEDS;
+                        // Si no hay GPS pero el RTC ya fue sincronizado, usar el RTC
+                        if (rtc_synced) {
+                            Serial.println("[GPS] Sin señal, usando RTC interno");
+                            // Usar coordenadas 0,0 cuando no hay GPS
+                            dataBuffer += "0.000000;0.000000;";
+                            dataBuffer += getCurrentDateString() + ";" + getCurrentTimeString() + ";";
+                            dcStage     = DC_READ_BME;
+                        } else {
+                            dcStage     = DC_UPDATE_LEDS;
+                        }
                     }
                 break;
 
                 case DC_READ_BME: {
-                    if (bme_ok) {
-                        float t = bme.readTemperature();
-                        float p = bme.readPressure() / 100.0F;
-                        float h = bme.readHumidity();
-                        dataBuffer  += String(t,2) + ";" 
-                                    + String(p,2) + ";"
-                                    + String(h,2) + ";";
-
-                    } else if (bmp_ok){
-                        float t = bmp.readTemperature();
-                        float p = bmp.readPressure() / 100.0F;
-                        dataBuffer  += String(t,2) + ";" 
-                                    + String(p,2) + ";"
-                                    + String(NAN,2) + ";";
-                    }
-                    else {
-                        Serial.println("BME no inicializado, no es posible recoger datos");
-                    }
-                    // Ahora pasamos a leer partículas
+                    dataBuffer += readBMEData(bme, bmp, bme_ok, bmp_ok);
                     dcStage = DC_READ_PARTICLES;
                 break;
                 }
                 
                 case DC_READ_PARTICLES: {
-                    // SPS30: esperamos data_ready sin delay()
-                    uint16_t ready = 0;
-                    int16_t ret = sps30_read_data_ready(&ready);
-                    if (ret < 0) {
-                      Serial.printf("error data_ready: %d\n", ret);
-                      dcStage = DC_WRITE_SD;  // saltamos al siguiente paso para no bloquear aquí
+                    String particlesData = readParticlesData(pm2_5, pm_10, ret);
+                    if (!particlesData.isEmpty()) {
+                        dataBuffer += particlesData;
+                        dcStage = DC_WRITE_SD;
                     }
-                    else if (ready) {
-                      struct sps30_measurement pm;
-                      ret = sps30_read_measurement(&pm);
-                      if (ret >= 0) {
-                        pm2_5 = pm.mc_2p5;
-                        pm_10 = pm.mc_10p0 - pm.mc_2p5;
-                        dataBuffer += String(pm.mc_2p5) + ";" 
-                                    + String(pm.mc_10p0 - pm.mc_2p5) + "\n";
-                      }
-                      dcStage = DC_WRITE_SD;
-                    }
-                    // si no está ready, nos quedamos en 3 hasta que lo esté
+                    // Si no hay datos listos, nos quedamos en este estado
                 break;
                 }
               
@@ -398,47 +291,10 @@ void loop(){
                 case DC_UPDATE_LEDS: {
                     // Actualizo LEDs de debug (sin bloqueos)
                     if (newDataFlag){
-                      pixels.clear();
-                      if(pm2_5 <= 12.0) {
-                          pixels.setPixelColor(0, COLOR_VERDE);
-                      } else if(pm2_5 <= 35.4) {
-                          pixels.setPixelColor(0, COLOR_NARANJA);
-                      } else {
-                          pixels.setPixelColor(0, COLOR_ROJO);
-                      }
-                      // LED 3 - PM10
-                      if(pm_10 <= 54.0) {
-                          pixels.setPixelColor(1, COLOR_VERDE);
-                      } else if(pm_10 <= 154.0) {
-                          pixels.setPixelColor(1, COLOR_NARANJA);
-                      } else {
-                          pixels.setPixelColor(1, COLOR_ROJO);
-                      }
-                      // LED 4 - Estado del sistema
-                      bool sistema_ok = true;
-                      // Verificar SPS30 (redundante)
-                      if (ret < 0) {
-                          pixels.setPixelColor(2, COLOR_ROJO);
-                          sistema_ok = false;
-                      } else if(!bme_ok) { //Si está el BME funcionando (redundante)
-                          pixels.setPixelColor(2, COLOR_NARANJA);
-                          sistema_ok = false;
-                      } else if(!SD_ok) { //Si está la SD funcionando (redundante)
-                          pixels.setPixelColor(2, COLOR_AMARILLO);
-                          sistema_ok = false;
-                      } else if (!bmp_ok) {
-                          pixels.setPixelColor(2, COLOR_AZUL);
-                          sistema_ok = false;
-                      }
-                      if (sistema_ok){
-                          pixels.setPixelColor(2, COLOR_VERDE);
-                      } else {
-                        pixels.setPixelColor(3, COLOR_ROJO);
-                      }
-                      pixels.show();
+                      updateStatusLEDs(pm2_5, pm_10, ret, bme_ok, bmp_ok, SD_ok, pixels);
                       dcStage = DC_WAIT;
                     } else { // Si no hay GPS secuencia de LEDS y volvemos a Ver si hay señal GPS
-                      blinking_led_sequence(COLOR_ROJO,3,250);
+                      blinking_led_sequence(COLOR_ROJO, 3, 250, pixels);
                       dcStage = DC_TRY_AGAIN;
                     }
                     dcTimestamp = millis();
@@ -492,7 +348,7 @@ void loop(){
             Serial.println("No se pudo conectar tras varios intentos. Borrando configuración WiFi.");
             wm.resetSettings(); // borra SSID/password de la NVS
             delay(1000);
-            blinking_led_sequence(COLOR_ROJO,5,500);
+            blinking_led_sequence(COLOR_ROJO, 5, 500, pixels);
             break; //? estará bien?
           }
           Serial.println("Conectado correctamente a WiFi");
@@ -614,76 +470,9 @@ void loop(){
           }
         
           client.stop();
-          blinking_led_sequence(COLOR_VERDE,3,500);          
+          blinking_led_sequence(COLOR_VERDE, 3, 500, pixels);          
           ESP.restart(); // Se reinicia y borra el archivo en setup, revisar si se quiere hacer así.
         break;
       }
     }
-}
-
-
-//% Aquí me parece que no está entrando, revisar por qué.
-void ledSequence(Mode fromMode) {
-  pixels.clear();
-  pixels.show();
-  switch (fromMode) {
-    case IDLE: // Transición IDLE -> DATA_RECOLLECTION
-      for (uint8_t i = 0; i < 2; i++) {
-        pixels.setPixelColor(0, COLOR_AMARILLO);
-        pixels.show();
-        delay(500);
-        pixels.setPixelColor(0, 0);
-        pixels.show();
-        delay(500);
-      }
-      break;
-
-    case DATA_RECOLLECTION: // Transición DATA_RECOLLECTION -> WIFI_CONNECTION
-      for (int dir = 0; dir < 2; dir++) {
-        if (dir == 0) {
-          for (uint16_t i = 0; i < NUMPIXELS; i++) {
-            pixels.clear();
-            pixels.setPixelColor(i, COLOR_AZUL);
-            pixels.show();
-            delay(250);
-          }
-        } else {
-          for (int16_t i = NUMPIXELS - 1; i >= 0; i--) {
-            pixels.clear();
-            pixels.setPixelColor(i, COLOR_AZUL);
-            pixels.show();
-            delay(250);
-          }
-        }
-      }
-      break;
-
-    case WIFI_CONNECTION: // Transición WIFI_CONNECTION -> SEND_DATA (si quisieras)
-      for (uint8_t k = 0; k < 4; k++) {
-        for (uint16_t i = 0; i < NUMPIXELS; i++) pixels.setPixelColor(i, COLOR_VERDE);
-        pixels.show(); delay(200);
-        for (uint16_t i = 0; i < NUMPIXELS; i++) pixels.setPixelColor(i, COLOR_ROJO);
-        pixels.show(); delay(200);
-      }
-      break;
-
-    default:
-      pixels.clear();
-      pixels.setPixelColor(0, COLOR_VERDE);
-      pixels.show();
-      break;
-  }
-}
-
-
-void blinking_led_sequence(uint32_t color, uint8_t times, uint16_t delayMs){
-  for (int i = 0; i < times; i++){
-    pixels.clear();
-    pixels.fill(color);
-    pixels.show();
-    delay(delayMs);
-    pixels.clear();
-    pixels.show();
-    delay(delayMs);
-  }
 }
