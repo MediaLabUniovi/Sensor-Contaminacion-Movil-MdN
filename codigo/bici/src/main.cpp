@@ -103,8 +103,8 @@ float pm_10;
 // --- Variables Globales para Gestión de Archivos ---
 String currentFilename = "";
 String uploadTarget = "";
-// Modo GPS (Intervalo por defecto)
-GPSMode currentGpsMode = GPS_MODE_INTERVAL;
+// Modo GPS (Continuo por defecto)
+GPSMode currentGpsMode = GPS_MODE_CONTINUOUS;
 // ---------------------------------------------------
 
 // BLE Callbacks Y SettingsCallbacks MOVIDOS A ble_manager.cpp
@@ -157,25 +157,57 @@ void setup() {
   }
 }
 
+// Variables para temporizar el color puro tras click corto en IDLE
+unsigned long modeShowTimer = 0;
+bool showingMode = false;
+
 void loop() {
   switch (currentMode) {
-  case IDLE:
+  case IDLE: {
     static bool once = true;
+
     if (once) {
-      // ELIMINADO: Ya no borramos ni creamos archivo por defecto al incio.
-      // Se gestionará dinámicamente al iniciar DATA_RECOLLECTION
       once = false;
       Serial.println("Sistema Listo. Esperando comando o pulsación.");
     }
-    // Mantener color según modo si estamos en IDLE
-    if (bluetoothEnabled) {
-      pixels.setPixelColor(0, COLOR_AZUL);
-    } else {
-      pixels.setPixelColor(0, COLOR_VERDE);
+
+    // Check if we need to show the mode color for 2 seconds after a short press
+    if (showingMode) {
+      if (millis() - modeShowTimer < 2000) {
+        if (bluetoothEnabled) {
+          pixels.setPixelColor(0, COLOR_AZUL);
+        } else {
+          pixels.setPixelColor(0, COLOR_VERDE);
+        }
+      } else {
+        showingMode = false; // 2 seconds have passed
+      }
     }
+
+    if (!showingMode) {
+      // Normal IDLE behavior: Check for pending files efficiently
+      bool hasPending = hasPendingFiles();
+
+      // Determine base state: fail (RED), pending (PURPLE), or OK (Mode Color)
+      if (ret < 0 || !bme_ok || !SD_ok) {
+        pixels.setPixelColor(0, COLOR_ROJO);
+      } else if (hasPending) {
+        pixels.setPixelColor(0, COLOR_MORADO);
+      } else {
+        if (bluetoothEnabled) {
+          pixels.setPixelColor(0, COLOR_AZUL);
+        } else {
+          pixels.setPixelColor(0, COLOR_VERDE);
+        }
+      }
+    }
+
+    // Keep LED 1 green to indicate system is ON (or according to battery if
+    // needed, currently VERDE as per base code)
     pixels.setPixelColor(1, COLOR_VERDE);
     pixels.show();
     break;
+  }
 
   case PROCESS_LONG_PRESS: {
     LongPressResult res = checkLongPress(lpState, lpCfg);
@@ -246,6 +278,9 @@ void loop() {
 
       bluetoothEnabled = !bluetoothEnabled; // Alternar preferencia
 
+      showingMode = true;
+      modeShowTimer = millis();
+
       if (bluetoothEnabled) {
         Serial.println(
             ">> Modo seleccionado: BLUETOOTH (Se mantendrá activo al iniciar)");
@@ -309,7 +344,7 @@ void loop() {
       newDataFlag = true;
       dcStage = DC_PROCESS_GPS;
 #else
-      // 1 segundo de “muestreo” GPS
+      // 5 segundos de "muestreo" GPS para dar tiempo a conectar en cold-starts
       while (Serial2.available()) {
         char c = Serial2.read();
         if (GPS.encode(c)) {
@@ -319,7 +354,7 @@ void loop() {
           break;
         }
       }
-      if (millis() - dcTimestamp >= 1000) {
+      if (millis() - dcTimestamp >= 5000) {
         Serial.println("[GPS] Timeout lectura GPS");
         dcStage = DC_PROCESS_GPS;
       }
@@ -422,7 +457,8 @@ void loop() {
 #else
         unsigned long age;
         GPS.f_get_position(&lat, &lon, &age);
-        if (age != TinyGPS::GPS_INVALID_AGE && age < 5000) { // Fix reciente
+        if (age != TinyGPS::GPS_INVALID_AGE &&
+            age < 1500) { // Fix reciente (< 1.5s)
           current_gps_status = 2;
         } else if (rtc_synced) { // Sin fix pero con RTC
           current_gps_status = 3;
@@ -463,11 +499,13 @@ void loop() {
         // --- LOGICA MODO CONTINUO ---
         // Si estamos en modo continuo, seguimos leyendo del puerto serie del
         // GPS para que no se llene el buffer y TinyGPS tenga datos frescos
-        // siempre.
+        // siempre. Leer en bloques para procesar más datos por iteración
         if (currentGpsMode == GPS_MODE_CONTINUOUS) {
 #ifndef SIMULATE_GPS
-          while (Serial2.available()) {
+          uint16_t bytes_read = 0;
+          while (Serial2.available() && bytes_read < 500) {
             GPS.encode(Serial2.read());
+            bytes_read++;
           }
 #endif
         }
@@ -475,8 +513,8 @@ void loop() {
       break;
 
     case DC_TRY_AGAIN:
-      // Si venimos de un fallo de coenxión del GPS, solo esperamos 20 segundos.
-      if (millis() - dcTimestamp >= 20000) {
+      // Si venimos de un fallo de coenxión del GPS, solo esperamos 5 segundos.
+      if (millis() - dcTimestamp >= 5000) {
         Serial.println("Volvemos a IDLE");
         dcStage = DC_IDLE; // volvemos al principio del flujo GPS→sensores
       }

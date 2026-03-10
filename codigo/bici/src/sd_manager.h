@@ -10,6 +10,9 @@
 // Retorna el nombre del nuevo archivo creado (e.g., "/data_9.csv")
 String performFileRotation();
 
+// Comprueba si hay al menos un archivo de datos (data_X.csv) en la SD
+bool hasPendingFiles();
+
 // Genera un JSON con la lista de archivos { "files": ["/data_0.csv", ...] }
 String listSDFilesJSON();
 

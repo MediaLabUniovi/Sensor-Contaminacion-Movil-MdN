@@ -29,6 +29,30 @@ String performFileRotation() {
   return currentFilename;
 }
 
+// Comprueba si hay al menos un archivo de datos pendiente en la SD
+bool hasPendingFiles() {
+  File root = SD.open("/");
+  if (!root)
+    return false;
+
+  File file = root.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      String name = String(file.name());
+      if ((name.startsWith("/data_") || name.startsWith("data_")) &&
+          name.endsWith(".csv")) {
+        file.close();
+        root.close();
+        return true;
+      }
+    }
+    file.close();
+    file = root.openNextFile();
+  }
+  root.close();
+  return false;
+}
+
 // Genera un JSON con la lista de archivos { "files": ["/data_0.csv", ...] }
 String listSDFilesJSON() {
   String fileList = "{\"files\":[";

@@ -12,7 +12,15 @@
  * 4. Notificar datos de sensores en tiempo real (Notify Characteristic).
  */
 
+#include <Arduino.h>
+#include <BLE2902.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <WiFi.h>
+
 #include "ble_manager.h"
+#include "config.h"
 
 // Variables Globales propias del BLE
 BLECharacteristic *pSensorDataCharacteristic;
@@ -192,7 +200,18 @@ class SettingsCallbacks : public BLECharacteristicCallbacks {
 };
 
 void initBLE() {
-  BLEDevice::init("AirQ-Sensor");
+  uint8_t macBT[6];
+  // Leer específicamente la MAC asignada a Bluetooth
+  esp_read_mac(macBT, ESP_MAC_BT);
+
+  char finalMac[5];
+  // Extraer como Texto Hexadecimal los últimos 2 bytes (equivale a 4
+  // caracteres)
+  sprintf(finalMac, "%02X%02X", macBT[4], macBT[5]);
+
+  String deviceName = "AirQ-" + String(finalMac);
+
+  BLEDevice::init(deviceName.c_str());
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 

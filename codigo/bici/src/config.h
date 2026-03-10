@@ -16,7 +16,8 @@ const uint8_t STABLE_SAMPLES_REQUIRED =
 
 //------------------------- Configuración Batería --------------------------
 #define BATTERY_PIN (34)
-const float VOLTAGE_DIVIDER_RATIO = 2.0; // Divisor de tensión 1:1 (100k + 100k)
+const float VOLTAGE_DIVIDER_RATIO =
+    2.2249; // Calibrado: 3.643V real / 3.275V medido * 2.0
 const float ADC_REFERENCE_VOLTAGE = 3.3; // Voltaje de referencia del ADC
 const int ADC_RESOLUTION = 4095;         // Resolución de 12 bits
 
@@ -27,9 +28,9 @@ const uint32_t HARDWARE_BAUDRATE = 115200; // Baudios Terminal Serie Hardware
 const uint32_t GPS_BAUDRATE = 9600;        // Baudios Terminal Serie Software
 const int8_t TIME_OFFSET_H =
     1; // Desfase de tiempo entre hora local y hora medida (+1 hora)
-#define SIMULATE_GPS // Descomentar para simular GPS
-// fijo (Gijón)
-// Enum para Modo GPS
+// #define SIMULATE_GPS // Descomentar para simular GPS
+//  fijo (Gijón)
+//  Enum para Modo GPS
 enum GPSMode {
   GPS_MODE_INTERVAL = 0,  // Lee 1s y duerme 20s
   GPS_MODE_CONTINUOUS = 1 // Lee continuamente en background
@@ -65,6 +66,7 @@ extern const char
 #define COLOR_NARANJA 0xFF8000
 #define COLOR_AMARILLO 0xFFFF00
 #define COLOR_CIAN 0x00FFFF
+#define COLOR_MORADO 0x800080
 
 //------------------------- Configuración de Mediciones
 //--------------------------

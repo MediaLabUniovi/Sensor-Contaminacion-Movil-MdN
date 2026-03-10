@@ -30,17 +30,35 @@ float readBatteryVoltage() {
 
 float readBatteryPercentage() {
   float voltage = readBatteryVoltage();
-  // Mapa aproximado para LiPo 1S:
-  // 4.2V -> 100%
+  // Mapa aproximado para Li-ion 1S:
+  // 4.15V -> 100%
   // 3.0V -> 0%
-  float percentage = (voltage - 3.0) * (100.0 / (4.2 - 3.0));
+  // Historial para suavizar la lectura
+  static float lastPercentage = -1.0;
+
+  float percentage = (voltage - 3.0) * (100.0 / (4.15 - 3.0));
 
   if (percentage > 100.0)
     percentage = 100.0;
   if (percentage < 0.0)
     percentage = 0.0;
 
-  return percentage;
+  // Lógica de suavizado:
+  // - En el primer arranque, lastPercentage será -1.0, así que tomamos el valor
+  // actual.
+  // - Si el nuevo porcentaje es MENOR que el anterior, lo actualizamos (la
+  // batería se gasta).
+  // - Si el nuevo porcentaje es MAYOR, solo lo actualizamos si ha subido más de
+  // un 3% (cargando).
+  if (lastPercentage < 0.0) {
+    lastPercentage = percentage;
+  } else if (percentage < lastPercentage) {
+    lastPercentage = percentage;
+  } else if ((percentage - lastPercentage) > 3.0) {
+    lastPercentage = percentage;
+  }
+
+  return lastPercentage;
 }
 
 // ==================== Funciones de LEDs ====================
