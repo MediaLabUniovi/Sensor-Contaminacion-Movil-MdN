@@ -28,11 +28,10 @@ const uint32_t HARDWARE_BAUDRATE = 115200; // Baudios Terminal Serie Hardware
 const uint32_t GPS_BAUDRATE = 9600;        // Baudios Terminal Serie Software
 const int8_t TIME_OFFSET_H =
     1; // Desfase de tiempo entre hora local y hora medida (+1 hora)
-// #define SIMULATE_GPS // Descomentar para simular GPS
 //  fijo (Gijón)
 //  Enum para Modo GPS
 enum GPSMode {
-  GPS_MODE_INTERVAL = 0,  // Lee 1s y duerme 20s
+  GPS_MODE_SIMULATED = 0, // Usa coordenadas fijas simuladas
   GPS_MODE_CONTINUOUS = 1 // Lee continuamente en background
 };
 extern GPSMode currentGpsMode; // Variable global para el modo actual

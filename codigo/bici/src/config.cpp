@@ -1,8 +1,6 @@
 /*
  * Definiciones de variables de configuración
  * Sensor de Contaminación Móvil Reto TICLAB Mar de Niebla 2025
- *
- * Autor: José Luis Muñiz Traviesas, Miguel Enterría, Andrés Vilas Grela; 28/01/25
 */
 
 #include "config.h"

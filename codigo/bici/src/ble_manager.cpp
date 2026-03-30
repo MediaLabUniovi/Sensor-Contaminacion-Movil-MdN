@@ -21,6 +21,9 @@
 
 #include "ble_manager.h"
 #include "config.h"
+#include <Preferences.h>
+
+extern Preferences preferences;
 
 // Variables Globales propias del BLE
 BLECharacteristic *pSensorDataCharacteristic;
@@ -80,21 +83,24 @@ class SettingsCallbacks : public BLECharacteristicCallbacks {
         if (end != -1) {
           String numStr = strVal.substring(start, end);
           TIEMPO_ENTRE_MEDIDAS = numStr.toInt() * 1000;
+          preferences.putUInt("interval", TIEMPO_ENTRE_MEDIDAS);
           Serial.print("Nuevo Intervalo (ms): ");
           Serial.println(TIEMPO_ENTRE_MEDIDAS);
         }
       }
 
       // 1.1 Configuración de Modo GPS
-      // {"gpsMode": "continuous"} o {"gpsMode": "interval"}
+      // {"gpsMode": "continuous"} o {"gpsMode": "simulated"}
       int idxGps = strVal.indexOf("\"gpsMode\":");
       if (idxGps != -1) {
         if (strVal.indexOf("continuous", idxGps) != -1) {
           currentGpsMode = GPS_MODE_CONTINUOUS;
+          preferences.putUInt("gpsMode", (uint32_t)currentGpsMode);
           Serial.println("Modo GPS: CONTINUO");
-        } else if (strVal.indexOf("interval", idxGps) != -1) {
-          currentGpsMode = GPS_MODE_INTERVAL;
-          Serial.println("Modo GPS: INTERVALO");
+        } else if (strVal.indexOf("simulated", idxGps) != -1) {
+          currentGpsMode = GPS_MODE_SIMULATED;
+          preferences.putUInt("gpsMode", (uint32_t)currentGpsMode);
+          Serial.println("Modo GPS: SIMULADO");
         }
       }
 
@@ -108,6 +114,18 @@ class SettingsCallbacks : public BLECharacteristicCallbacks {
           pSensorDataCharacteristic->setValue(fileList.c_str());
           pSensorDataCharacteristic->notify();
           Serial.println("Enviada lista de archivos: " + fileList);
+        }
+      }
+
+      // 2.1 Enviar Settings Actuales (Sincronización App)
+      // {"cmd": "getSettings"}
+      if (strVal.indexOf("\"cmd\":\"getSettings\"") != -1 ||
+          strVal.indexOf("\"cmd\": \"getSettings\"") != -1) {
+        if (pSensorDataCharacteristic) {
+          String json = "{\"type\":\"settings\",\"interval\":" + String(TIEMPO_ENTRE_MEDIDAS) + ",\"gpsMode\":\"" + (currentGpsMode == GPS_MODE_CONTINUOUS ? "continuous" : "simulated") + "\"}";
+          pSensorDataCharacteristic->setValue(json.c_str());
+          pSensorDataCharacteristic->notify();
+          Serial.println("Enviada configuracion actual: " + json);
         }
       }
 

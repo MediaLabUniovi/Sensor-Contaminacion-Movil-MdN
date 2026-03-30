@@ -4,6 +4,20 @@ En este documento se registran las modificaciones, ajustes y mejoras implementad
 
 ## Mejoras Recientes
 
+### Persistencia NVM de Ajustes y Sincronización Automática
+*   **Problema:** Al reiniciar el sensor (perder la alimentación), siempre volvía a los valores por defecto configurados en el sistema (ej. 30 segundos, modo continuo), olvidando los ajustes hechos en la configuración Bluetooth, que tampoco reflejaban el valor real al reconectarse a la App.
+*   **Solución:** Se implementó una memoria no-volátil empleando `<Preferences.h>`.
+    *   `ble_manager` almacena automáticamente los valores `interval` y `gpsMode` en cada cambio hecho desde la App.
+    *   Se diseñó y añadió el nuevo comando JSON `{"cmd": "getSettings"}` para devolver el estado actual embebido hacia el *Frontend*.
+    *   La app ahora requiere la configuración al entrar a su pantalla de Ajustes y vuelca el estado real en los selectores visualmente para un flujo totalmente asíncrono y fiable.
+
+### Control Dinámico del Modo GPS Simulado
+*   **Problema:** El modo de simulación del GPS estaba controlado por una directiva de preprocesador (`#define SIMULATE_GPS`), lo que obligaba a recompilar el código para hacer pruebas. Además, la aplicación móvil tenía opciones obsoletas (GPS por intervalo).
+*   **Solución:** El modo simulado se ha convertido en una opción seleccionable desde la App de manera dinámica.
+    *   Se sustituyó la macro de compilador por una comprobación en tiempo real del nuevo enum `GPS_MODE_SIMULATED`.
+    *   La App móvil (React Native) se simplificó devolviendo únicamente las opciones "Continuo" y "Simulado", enviando esta configuración por BLE.
+    *   El módulo `ble_manager.cpp` procesa la asignación para alterar la ejecución de las lecturas falsas al instante, aliviando el proceso de testing.
+
 ### Calibración y Ajuste del Lector de Batería (ADC)
 *   **Problema:** El sistema estaba descalibrado, mostrando un 22.9% de batería con un voltaje real en celda de 3.643 V. El divisor de tensión y la referencia del ADC leían internamente ~3.275 V.
 *   **Solución:** 

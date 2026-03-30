@@ -2,7 +2,6 @@
  * Código proyecto de Sensor de Contaminación Móvil Reto TICLAB Mar de Niebla
  * 2025
  *
- * Autor: José Luis Muñiz Traviesas, Miguel Enterría, Andrés Vilas Grela;
  * 28/01/25
  *
  * USO DEL DISPOSITIVO:
@@ -12,17 +11,14 @@
  *   - En Modo Bluetooth, los datos también se envían a la App móvil en tiempo
  * real.
  */
-// TODO: Cambiar secuencia de leds si se ve necesario, puede ser poco
-// descriptivo para el usuario.
-// TODO: Si pierde conexión GPS no es capaz de vilver a captarla (solo pasa a
-// veces).
-// TODO: Poner trapo separando sps30 y antena gps del resto del circuito
 // GPS
 #include "Arduino.h"
 #include <TinyGPS.h> // https://github.com/neosarchizo/TinyGPS
 #include <time.h>    // Para manejo de RTC interno
 
 // Tarjeta SD - Gestionada por sd_manager y mdc_contaminacion
+#include <Preferences.h>
+Preferences preferences;
 
 // SPS30 (Sensor PM)
 #include <sps30.h> // https://github.com/Sensirion/arduino-sps
@@ -136,6 +132,11 @@ void setup() {
   pinMode(BATTERY_PIN, INPUT); // Configurar pin de batería como entrada
   attachInterrupt(digitalPinToInterrupt(USER_BUTTON), isr_button_pressed,
                   FALLING);
+
+  // ----------------- LEER AJUSTES NVM -------------
+  preferences.begin("airq_config", false);
+  TIEMPO_ENTRE_MEDIDAS = preferences.getUInt("interval", 30000);
+  currentGpsMode = (GPSMode)preferences.getUInt("gpsMode", 1); // 1 = GPS_MODE_CONTINUOUS
 
   // ----------------- INICIALIZAR BLE -----------------
   initBLE();
@@ -306,6 +307,8 @@ void loop() {
     static uint32_t dcTimestamp = 0;
     static bool newDataFlag = false;
     static String dataBuffer = "";
+    static float last_lat = 0.0;
+    static float last_lon = 0.0;
 
     // Permitir detectar un nuevo long‑press en cualquier momento
     LongPressResult lpRes = checkLongPress(lpState, lpCfg);
@@ -338,74 +341,78 @@ void loop() {
     }
 
     case DC_READ_GPS:
-#ifdef SIMULATE_GPS
-      Serial.println(
-          "[GPS-SIM] Saltando lectura HW, usando coordenadas simuladas...");
-      newDataFlag = true;
-      dcStage = DC_PROCESS_GPS;
-#else
-      // 5 segundos de "muestreo" GPS para dar tiempo a conectar en cold-starts
-      while (Serial2.available()) {
-        char c = Serial2.read();
-        if (GPS.encode(c)) {
-          Serial.println("[GPS] NMEA decodificada antes de timeout");
-          newDataFlag = true;
+      if (currentGpsMode == GPS_MODE_SIMULATED) {
+        Serial.println(
+            "[GPS-SIM] Saltando lectura HW, usando coordenadas simuladas...");
+        newDataFlag = true;
+        dcStage = DC_PROCESS_GPS;
+      } else {
+        // 5 segundos de "muestreo" GPS para dar tiempo a conectar en cold-starts
+        while (Serial2.available()) {
+          char c = Serial2.read();
+          if (GPS.encode(c)) {
+            Serial.println("[GPS] NMEA decodificada antes de timeout");
+            newDataFlag = true;
+            dcStage = DC_PROCESS_GPS;
+            break;
+          }
+        }
+        if (millis() - dcTimestamp >= 5000) {
+          Serial.println("[GPS] Timeout lectura GPS");
           dcStage = DC_PROCESS_GPS;
-          break;
         }
       }
-      if (millis() - dcTimestamp >= 5000) {
-        Serial.println("[GPS] Timeout lectura GPS");
-        dcStage = DC_PROCESS_GPS;
-      }
-#endif
       break;
 
     case DC_PROCESS_GPS:
       // Procesamos datos GPS (si los hay)
       if (newDataFlag) {
-#ifdef SIMULATE_GPS
-        float lat = 43.53573;
-        float lon = -5.66152;
-        dataBuffer += String(lat, 6) + ";" + String(lon, 6) + ";";
-        // Simulamos también que el RTC interno está correcto (o lo usarmos tal
-        // cual)
-        if (!rtc_synced) {
-          // Sincronizar con hora fija o dejar que use 00:00 si es boot
-          syncRTCWithGPS(2025, 6, 15, 12, 0, 0);
-          rtc_synced = true;
-        }
-        dataBuffer +=
-            getCurrentDateString() + ";" + getCurrentTimeString() + ";";
-        dcStage = DC_READ_BME;
-#else
-        float lat, lon;
-        unsigned long age;
-        int year;
-        uint8_t month, day, hour, minute, second;
-        GPS.f_get_position(&lat, &lon, &age);
-        dataBuffer += String(lat, 6) + ";" + String(lon, 6) + ";";
-        GPS.crack_datetime(&year, &month, &day, &hour, &minute, &second, NULL,
-                           NULL);
+        if (currentGpsMode == GPS_MODE_SIMULATED) {
+          last_lat = 43.53573;
+          last_lon = -5.66152;
+          dataBuffer += String(last_lat, 6) + ";" + String(last_lon, 6) + ";";
+          // Simulamos también que el RTC interno está correcto (o lo usarmos tal
+          // cual)
+          if (!rtc_synced) {
+            // Sincronizar con hora fija o dejar que use 00:00 si es boot
+            syncRTCWithGPS(2025, 6, 15, 12, 0, 0);
+            rtc_synced = true;
+          }
+          dataBuffer +=
+              getCurrentDateString() + ";" + getCurrentTimeString() + ";";
+          dcStage = DC_READ_BME;
+        } else {
+          float lat, lon;
+          unsigned long age;
+          int year;
+          uint8_t month, day, hour, minute, second;
+          GPS.f_get_position(&lat, &lon, &age);
+          if (age != TinyGPS::GPS_INVALID_AGE) {
+            last_lat = lat;
+            last_lon = lon;
+          }
+          dataBuffer += String(last_lat, 6) + ";" + String(last_lon, 6) + ";";
+          GPS.crack_datetime(&year, &month, &day, &hour, &minute, &second, NULL,
+                             NULL);
 
-        // Sincronizar RTC interno la primera vez que obtenemos datos GPS
-        // válidos
-        if (!rtc_synced) {
-          syncRTCWithGPS(year, month, day, hour, minute, second);
-          rtc_synced = true;
-        }
+          // Sincronizar RTC interno la primera vez que obtenemos datos GPS
+          // válidos
+          if (!rtc_synced) {
+            syncRTCWithGPS(year, month, day, hour, minute, second);
+            rtc_synced = true;
+          }
 
-        // Obtener fecha y hora del RTC interno
-        dataBuffer +=
-            getCurrentDateString() + ";" + getCurrentTimeString() + ";";
-        dcStage = DC_READ_BME;
-#endif
+          // Obtener fecha y hora del RTC interno
+          dataBuffer +=
+              getCurrentDateString() + ";" + getCurrentTimeString() + ";";
+          dcStage = DC_READ_BME;
+        }
       } else {
         // Si no hay GPS pero el RTC ya fue sincronizado, usar el RTC
         if (rtc_synced) {
-          Serial.println("[GPS] Sin señal, usando RTC interno");
-          // Usar coordenadas 0,0 cuando no hay GPS
-          dataBuffer += "0.000000;0.000000;";
+          Serial.println("[GPS] Sin señal, usando última posición conocida");
+          // Usar la última coordenada conocida en lugar de 0,0
+          dataBuffer += String(last_lat, 6) + ";" + String(last_lon, 6) + ";";
           dataBuffer +=
               getCurrentDateString() + ";" + getCurrentTimeString() + ";";
           // IMPORTANTE: Tenemos datos válidos (tiempo RTC + Sensores que
@@ -449,30 +456,30 @@ void loop() {
         // Determinar status GPS para los LEDs: 0=Error/Vacio, 1=SIMULATE_GPS,
         // 2=FIX REAL, 3=Usando RTC Interno
         uint8_t current_gps_status = 0;
-        float lat = 0.0, lon = 0.0;
-#ifdef SIMULATE_GPS
-        current_gps_status = 1;
-        lat = 43.53573;
-        lon = -5.66152;
-#else
-        unsigned long age;
-        GPS.f_get_position(&lat, &lon, &age);
-        if (age != TinyGPS::GPS_INVALID_AGE &&
-            age < 1500) { // Fix reciente (< 1.5s)
-          current_gps_status = 2;
-        } else if (rtc_synced) { // Sin fix pero con RTC
-          current_gps_status = 3;
-        } else { // Sin nada
-          current_gps_status = 0;
+        if (currentGpsMode == GPS_MODE_SIMULATED) {
+          current_gps_status = 1;
+          last_lat = 43.53573; // Asegurar consistencia
+          last_lon = -5.66152;
+        } else {
+          unsigned long age;
+          float temp_lat, temp_lon;
+          GPS.f_get_position(&temp_lat, &temp_lon, &age);
+          if (age != TinyGPS::GPS_INVALID_AGE &&
+              age < 1500) { // Fix reciente (< 1.5s)
+            current_gps_status = 2;
+          } else if (rtc_synced) { // Sin fix pero con RTC
+            current_gps_status = 3;
+          } else { // Sin nada
+            current_gps_status = 0;
+          }
         }
-#endif
 
         updateStatusLEDs(pm2_5, pm_10, ret, bme_ok, SD_ok,
                          readBatteryPercentage(), current_gps_status, pixels);
 
         // --- BLE NOTIFICATION ---
         notifySensorData(bme.readTemperature(), bme.readHumidity(), pm2_5,
-                         pm_10, readBatteryPercentage(), lat, lon);
+                         pm_10, readBatteryPercentage(), last_lat, last_lon);
         // ------------------------
         // ------------------------
 
@@ -501,13 +508,11 @@ void loop() {
         // GPS para que no se llene el buffer y TinyGPS tenga datos frescos
         // siempre. Leer en bloques para procesar más datos por iteración
         if (currentGpsMode == GPS_MODE_CONTINUOUS) {
-#ifndef SIMULATE_GPS
           uint16_t bytes_read = 0;
           while (Serial2.available() && bytes_read < 500) {
             GPS.encode(Serial2.read());
             bytes_read++;
           }
-#endif
         }
       }
       break;
